@@ -93,7 +93,8 @@ class Runner:
     # --- the agent() primitive -------------------------------------------
     async def agent(self, prompt: str, *, label: str, schema: dict | None = None,
                     role: str | None = None, prefer: list[str] | None = None,
-                    sandbox: str = "read-only") -> AgentResult:
+                    sandbox: str = "read-only",
+                    cwd: str | None = None) -> AgentResult:
         if label in self._done:
             log(f"RESUMED  {label}  (cached, 0 tokens)")
             return replace(self._done[label], resumed=True)   # always flag cache hits
@@ -124,7 +125,12 @@ class Runner:
             async with self.sems[name]:
                 log(f"DISPATCH {label} → {name} (cap {self.caps.get(name)})")
                 try:
-                    value = await prov.run(prompt, schema=use_schema, sandbox=sandbox)
+                    value = await prov.run(
+                        prompt,
+                        schema=use_schema,
+                        sandbox=sandbox,
+                        cwd=cwd,
+                    )
                     attempts.append(Attempt(name, "DONE"))
                     res = AgentResult(label, "DONE", name, value, attempts)
                     self._done[label] = res      # within-process dedup, not just cross-process

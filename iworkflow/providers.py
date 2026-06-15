@@ -49,7 +49,14 @@ class Provider:
     supports_schema: bool = True
     timeout_s: int = 300
 
-    async def run(self, prompt: str, *, schema: dict[str, Any] | None, sandbox: str) -> Any:
+    async def run(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, Any] | None,
+        sandbox: str,
+        cwd: str | None = None,
+    ) -> Any:
         raise NotImplementedError
 
     @staticmethod
@@ -66,12 +73,18 @@ class Provider:
             raise RateLimited(combined[-400:])
         raise ProviderError(f"exit {exit_code}: {combined[-400:]}")
 
-    async def _exec(self, argv: list[str], stdin: str) -> tuple[int, str, str]:
+    async def _exec(
+        self,
+        argv: list[str],
+        stdin: str,
+        cwd: str | None = None,
+    ) -> tuple[int, str, str]:
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
         )
         try:
             out, err = await asyncio.wait_for(
@@ -84,7 +97,14 @@ class Provider:
 
 
 class CodexProvider(Provider):
-    async def run(self, prompt, *, schema, sandbox="read-only"):
+    async def run(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, Any] | None,
+        sandbox: str = "read-only",
+        cwd: str | None = None,
+    ) -> Any:
         schema_file = out_file = None
         try:
             argv = ["codex", "exec", "--sandbox", sandbox,
@@ -97,7 +117,7 @@ class CodexProvider(Provider):
                 fd, out_file = tempfile.mkstemp(suffix=".out.json"); os.close(fd)
                 argv += ["--output-schema", schema_file, "-o", out_file]
             argv += ["-"]
-            code, stdout, stderr = await self._exec(argv, prompt)
+            code, stdout, stderr = await self._exec(argv, prompt, cwd=cwd)
             self._classify(code, stdout + "\n" + stderr)
             if schema:
                 payload = json.loads(open(out_file).read() or "{}")
@@ -113,7 +133,14 @@ class CodexProvider(Provider):
 
 
 class ClaudeProvider(Provider):
-    async def run(self, prompt, *, schema, sandbox="read-only"):
+    async def run(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, Any] | None,
+        sandbox: str = "read-only",
+        cwd: str | None = None,
+    ) -> Any:
         schema_file = None
         try:
             # Workers start LEAN: --strict-mcp-config skips the repo's heavy MCP
@@ -129,7 +156,7 @@ class ClaudeProvider(Provider):
                 fd, schema_file = tempfile.mkstemp(suffix=".schema.json")
                 os.write(fd, json.dumps(schema).encode()); os.close(fd)
                 argv += ["--json-schema", schema_file]
-            code, stdout, stderr = await self._exec(argv, prompt)
+            code, stdout, stderr = await self._exec(argv, prompt, cwd=cwd)
             self._classify(code, stdout + "\n" + stderr)
             envelope = json.loads(stdout)            # claude -p --output-format json envelope
             result = envelope.get("result", envelope)
@@ -151,7 +178,14 @@ class GeminiProvider(Provider):
 
     supports_schema: bool = False
 
-    async def run(self, prompt, *, schema, sandbox="read-only"):
+    async def run(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, Any] | None,
+        sandbox: str = "read-only",
+        cwd: str | None = None,
+    ) -> Any:
         argv = ["agy", "-p"]
         if self.model:
             argv += ["--model", self.model]
@@ -160,7 +194,7 @@ class GeminiProvider(Provider):
             full += ("\n\nReturn ONLY a JSON object matching this schema, "
                      "wrapped in ```json ... ```:\n" + json.dumps(schema))
         argv += [full]
-        code, stdout, stderr = await self._exec(argv, "")
+        code, stdout, stderr = await self._exec(argv, "", cwd=cwd)
         self._classify(code, stdout + "\n" + stderr)
         if not schema:
             return stdout.strip()
@@ -190,7 +224,14 @@ class FakeProvider(Provider):
     _active: int = field(default=0, init=False)
     concurrent_peak: int = field(default=0, init=False)
 
-    async def run(self, prompt, *, schema, sandbox="read-only"):
+    async def run(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, Any] | None,
+        sandbox: str = "read-only",
+        cwd: str | None = None,
+    ) -> Any:
         self._calls += 1
         if self._calls <= self.limit_first_n:
             raise RateLimited(f"{self.name}: simulated session limit (call {self._calls})")
@@ -253,7 +294,14 @@ class ClaudeInteractiveProvider(Provider):
     async def _pane(self, session: str) -> str:
         return await self._tmux("capture-pane", "-p", "-S", "-800", "-t", session)
 
-    async def run(self, prompt, *, schema, sandbox="read-only"):
+    async def run(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, Any] | None,
+        sandbox: str = "read-only",
+        cwd: str | None = None,
+    ) -> Any:
         self._seq += 1
         session = f"iwf-{os.getpid()}-{self._seq}"
         full = prompt
@@ -262,10 +310,15 @@ class ClaudeInteractiveProvider(Provider):
                      "this schema — no code fences, no commentary:\n" + json.dumps(schema))
         await self._tmux("kill-session", "-t", session)
         try:
-            await self._tmux(
-                "new-session", "-d", "-s", session, "-x", "300", "-y", "50",
+            command = (
                 f"claude --strict-mcp-config --setting-sources user "
-                f"--permission-mode {self.permission_mode}")
+                f"--permission-mode {self.permission_mode}"
+            )
+            # tmux's native -c sets the session's start dir (robuster than `cd &&`)
+            new_session = ["new-session", "-d", "-s", session, "-x", "300", "-y", "50"]
+            if cwd:
+                new_session += ["-c", cwd]
+            await self._tmux(*new_session, command)
 
             # readiness
             for _ in range(int(40 / self.poll_s) + 1):

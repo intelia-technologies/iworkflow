@@ -1,6 +1,16 @@
 import asyncio
 
-from iworkflow import FakeProvider, Runner
+from iworkflow import FakeProvider, Provider, Runner
+
+
+class CwdRecordingProvider(Provider):
+    def __init__(self):
+        super().__init__("codex")
+        self.cwd = None
+
+    async def run(self, prompt, *, schema, sandbox="read-only", cwd=None):
+        self.cwd = cwd
+        return {"verdict": "DONE", "summary": prompt}
 
 
 def test_per_provider_semaphore_cap(tmp_path):
@@ -29,6 +39,30 @@ def test_per_provider_semaphore_cap(tmp_path):
     assert all(result.ok for result in results)
     assert provider.concurrent_peak <= 2
     assert provider._calls == 6
+
+
+def test_agent_forwards_cwd_to_provider(tmp_path):
+    provider = CwdRecordingProvider()
+    runner = Runner(
+        "cwd-forwarding",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path / "journal"),
+    )
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+
+    result = asyncio.run(
+        runner.agent(
+            "write in this checkout",
+            label="job",
+            prefer=["codex"],
+            cwd=str(worktree),
+        )
+    )
+
+    assert result.ok
+    assert provider.cwd == str(worktree)
 
 
 def test_failover_order(tmp_path):
