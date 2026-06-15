@@ -54,12 +54,17 @@ class Provider:
 
     @staticmethod
     def _classify(exit_code: int, combined: str) -> None:
-        if _LIMIT_PATTERNS.search(combined):
-            raise RateLimited(combined[-400:])
+        # A SUCCESSFUL call (exit 0) is never a rate limit, even if its content
+        # mentions "rate limit"/"quota"/"overloaded" — only a FAILED call can be
+        # throttled. (Scanning successful output for those words was a false-
+        # positive bug: a task ABOUT rate-limiting tripped its own detector.)
         if exit_code == 124:
             raise ProviderError("timed out")
-        if exit_code != 0:
-            raise ProviderError(f"exit {exit_code}: {combined[-400:]}")
+        if exit_code == 0:
+            return
+        if _LIMIT_PATTERNS.search(combined):
+            raise RateLimited(combined[-400:])
+        raise ProviderError(f"exit {exit_code}: {combined[-400:]}")
 
     async def _exec(self, argv: list[str], stdin: str) -> tuple[int, str, str]:
         proc = await asyncio.create_subprocess_exec(
@@ -278,23 +283,28 @@ class ClaudeInteractiveProvider(Provider):
             await self._tmux("paste-buffer", "-p", "-t", session)
             await self._tmux("send-keys", "-t", session, "Enter")
 
-            # completion: pane stable + a fresh schema-valid JSON present
+            # completion: stable pane + (schema → fresh valid JSON) / (prose → ⏺ block)
             prev, stable = None, 0
             max_polls = int(self.timeout_s / self.poll_s)
             for _ in range(max_polls):
                 await asyncio.sleep(self.poll_s)
                 cur = await self._pane(session)
-                if _LIMIT_PATTERNS.search(cur):
+                # tight Claude-specific limit banner only — NOT the generic regex,
+                # which would match the echoed prompt or Claude discussing limits.
+                if re.search(r"usage limit reached|approaching your usage limit",
+                             cur, re.IGNORECASE):
                     raise RateLimited(cur[-400:])
                 stable = stable + 1 if cur == prev else 0
                 prev = cur
-                cand = _find_schema_json(cur, schema)
-                if cand is not None and cand != base_json and stable >= 1:
-                    if schema:
+                if schema:
+                    cand = _find_schema_json(cur, schema)
+                    if cand is not None and cand != base_json and stable >= 1:
                         ok, why = validate(cand, schema)
                         if not ok:
                             raise ProviderError(f"schema mismatch: {why}")
-                    return cand if schema else _response_text(cur)
+                        return cand
+                elif "⏺" in cur and stable >= 2:          # prose response has settled
+                    return _response_text(cur)
             raise ProviderError("timed out waiting for interactive response")
         finally:
             await self._tmux("kill-session", "-t", session)

@@ -105,12 +105,37 @@ async def scenario_4_pipeline() -> bool:
     return ok
 
 
+async def scenario_5_classify() -> bool:
+    print("\n── Scenario 5: rate-limit detected only on FAILURE (regression) ──")
+    from iworkflow import Provider, ProviderError, RateLimited
+    ok = True
+    try:   # exit 0 whose CONTENT mentions limits → success, NOT rate-limited
+        Provider._classify(0, "handle the rate limit and quota gracefully")
+    except Exception as e:  # noqa: BLE001
+        ok = False; print(f"   FAIL exit-0 success raised {e!r}")
+    try:   # real failure + limit banner → RateLimited
+        Provider._classify(1, "Error: usage limit reached"); ok = False
+    except RateLimited:
+        pass
+    except Exception as e:  # noqa: BLE001
+        ok = False; print(f"   FAIL wrong type {e!r}")
+    try:   # other failure → ProviderError, not RateLimited
+        Provider._classify(1, "segfault"); ok = False
+    except ProviderError:
+        pass
+    except Exception:  # noqa: BLE001
+        ok = False
+    print(f"   exit-0 content ignored · failures classified → {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 async def main() -> int:
     fresh()
     results = [await scenario_1_cap(),
                await scenario_2_failover(),
                await scenario_3_resume(),
-               await scenario_4_pipeline()]
+               await scenario_4_pipeline(),
+               await scenario_5_classify()]
     fresh()
     passed = sum(results)
     print(f"\n═══ {passed}/{len(results)} scenarios PASS ═══")
