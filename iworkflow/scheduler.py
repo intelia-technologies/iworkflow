@@ -11,12 +11,12 @@ Zero API tokens (workers are the CLIs). Zero coordination tokens (this is code).
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
+import time
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from .ledger import LedgerRecord, RunLedger, sha
 from .providers import Provider, ProviderError, RateLimited
 from .routing import KIND_ROUTES as ROUTES  # re-exported for callers
 from .routing import route
@@ -59,33 +59,30 @@ class Runner:
         self.providers = providers
         self.sems = {name: asyncio.Semaphore(caps.get(name, 2)) for name in providers}
         self.caps = caps
-        self.journal_path = Path(journal_dir) / "runs" / run_id / "journal.jsonl"
-        self.journal_path.parent.mkdir(parents=True, exist_ok=True)
-        self._done: dict[str, AgentResult] = self._load_journal()
+        self.ledger = RunLedger(run_id, journal_dir)
+        self._done: dict[str, AgentResult] = self._load_done()
 
-    # --- resume -----------------------------------------------------------
-    def _load_journal(self) -> dict[str, AgentResult]:
-        done: dict[str, AgentResult] = {}
-        if self.journal_path.exists():
-            for line in self.journal_path.read_text().splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue          # skip a partial line left by a crash mid-write
-                if rec["status"] == "DONE":
-                    done[rec["label"]] = AgentResult(
-                        label=rec["label"], status="DONE", provider=rec["provider"],
-                        value=rec["value"], resumed=True)
+    # --- resume (durable ledger, see ledger.py) --------------------------
+    def _load_done(self) -> dict[str, AgentResult]:
+        done = {label: AgentResult(label=label, status="DONE", provider=rec.get("provider"),
+                                   value=rec.get("value"), resumed=True)
+                for label, rec in self.ledger.load_done().items()}
         if done:
-            log(f"resume: {len(done)} agent(s) recovered from journal {self.journal_path}")
+            log(f"resume: {len(done)} agent(s) recovered from ledger {self.ledger.path}")
         return done
 
-    def _persist(self, res: AgentResult) -> None:
-        with self.journal_path.open("a") as fh:
-            fh.write(json.dumps({"label": res.label, "status": res.status,
-                                 "provider": res.provider, "value": res.value}) + "\n")
+    def _record(self, res: AgentResult, *, prompt: str, schema: dict | None,
+                attempts: list[Attempt], t_start: float) -> None:
+        self.ledger.append(LedgerRecord(
+            run_id=self.run_id, label=res.label, status=res.status,
+            provider=res.provider, value=res.value,
+            attempts=[{"provider": a.provider, "outcome": a.outcome, "detail": a.detail}
+                      for a in attempts],
+            prompt_sha=sha(prompt), schema_sha=sha(schema) if schema else None,
+            ts_start=t_start, ts_end=time.time(),
+            error_class=(attempts[-1].outcome if res.status == "EXHAUSTED" and attempts
+                         else None),
+            retry_after=None))
 
     # --- the agent() primitive -------------------------------------------
     async def agent(self, prompt: str, *, label: str, schema: dict | None = None,
@@ -95,6 +92,7 @@ class Runner:
             log(f"RESUMED  {label}  (cached, 0 tokens)")
             return replace(self._done[label], resumed=True)   # always flag cache hits
 
+        t_start = time.time()
         if prefer:
             order, why = [p for p in prefer if p in self.providers], "explicit"
         else:
@@ -114,7 +112,8 @@ class Runner:
                     attempts.append(Attempt(name, "DONE"))
                     res = AgentResult(label, "DONE", name, value, attempts)
                     self._done[label] = res      # within-process dedup, not just cross-process
-                    self._persist(res)
+                    self._record(res, prompt=prompt, schema=schema,
+                                 attempts=attempts, t_start=t_start)
                     log(f"DONE     {label} ← {name}")
                     return res
                 except RateLimited as e:
@@ -126,7 +125,7 @@ class Runner:
                     log(f"ERROR    {label} ✗ {name}: {str(e)[:80]} → failover")
                     continue
         res = AgentResult(label, "EXHAUSTED", None, None, attempts)
-        self._persist(res)
+        self._record(res, prompt=prompt, schema=schema, attempts=attempts, t_start=t_start)
         log(f"EXHAUSTED {label} — every subscription failed: "
             f"{[(a.provider, a.outcome) for a in attempts]}")
         return res
