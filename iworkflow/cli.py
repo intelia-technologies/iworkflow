@@ -51,6 +51,17 @@ def register_codex(root: str) -> tuple[Path, bool]:
     return path, True
 
 
+def ensure_gitignore(root: str, entry: str = ".iworkflow/") -> tuple[Path, bool]:
+    """Add `entry` to <root>/.gitignore if absent (so run logs aren't committed)."""
+    path = Path(root) / ".gitignore"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if entry in (line.strip() for line in text.splitlines()):
+        return path, False
+    sep = "" if text.endswith("\n") or not text else "\n"
+    path.write_text(f"{text}{sep}{entry}\n", encoding="utf-8")
+    return path, True
+
+
 def _cmd_register(root: str, *, codex: bool, claude: bool) -> None:
     targets = []
     if codex or not (codex or claude):
@@ -60,8 +71,11 @@ def _cmd_register(root: str, *, codex: bool, claude: bool) -> None:
     for name, fn in targets:
         path, wrote = fn(root)
         print(f"{'registered' if wrote else 'already present'}: {name} → {path}")
+    gi_path, gi_wrote = ensure_gitignore(root)
+    print(f"{'added to' if gi_wrote else 'already in'} .gitignore: .iworkflow/  → {gi_path}")
     print('\nDone. Agents in this repo can now call the "iworkflow" MCP tools '
-          "(iworkflow_ping, iworkflow_workflow).")
+          "(iworkflow_ping, iworkflow_workflow). Commit the config so every worktree "
+          "inherits it.")
 
 
 def _cmd_stats(journal_dir: str, run_id: str | None) -> None:
