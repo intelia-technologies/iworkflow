@@ -1,6 +1,10 @@
+import asyncio
+import sys
+
 import pytest
 
 from iworkflow.providers import (
+    ClaudeInteractiveProvider,
     Provider,
     ProviderError,
     RateLimited,
@@ -37,6 +41,63 @@ def test_classify_failed_non_limit_text_raises_provider_error():
 def test_classify_timeout_raises_provider_error():
     with pytest.raises(ProviderError, match="timed out"):
         Provider._classify(124, "usage limit reached")
+
+
+def test_exec_runs_subprocess_in_cwd(tmp_path):
+    provider = Provider("base")
+
+    code, stdout, stderr = asyncio.run(
+        provider._exec(
+            [
+                sys.executable,
+                "-c",
+                "import os; print(os.getcwd())",
+            ],
+            "",
+            cwd=str(tmp_path),
+        )
+    )
+
+    assert code == 0
+    assert stderr == ""
+    assert stdout.strip() == str(tmp_path)
+
+
+def test_claude_interactive_starts_tmux_session_in_cwd(tmp_path, monkeypatch):
+    cwd = tmp_path / "repo with spaces"
+    cwd.mkdir()
+
+    async def fast_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("iworkflow.providers.asyncio.sleep", fast_sleep)
+
+    class RecordingClaudeInteractiveProvider(ClaudeInteractiveProvider):
+        def __init__(self):
+            super().__init__("claude", timeout_s=1, poll_s=0.01)
+            self.commands = []
+            self.pane_calls = 0
+
+        async def _tmux(self, *args):
+            self.commands.append(args)
+            return ""
+
+        async def _pane(self, session):
+            self.pane_calls += 1
+            if self.pane_calls <= 2:
+                return "Claude Max plan mode"
+            return "Claude Max plan mode\n⏺\n  cwd response"
+
+    provider = RecordingClaudeInteractiveProvider()
+
+    result = asyncio.run(
+        provider.run("say cwd", schema=None, sandbox="read-only", cwd=str(cwd))
+    )
+
+    new_session = next(command for command in provider.commands if command[0] == "new-session")
+    assert result == "cwd response"
+    assert "-c" in new_session and str(cwd) in new_session   # tmux native start-dir
+    assert new_session[-1].startswith("claude ")
 
 
 def test_find_schema_json_extracts_last_schema_valid_object():
