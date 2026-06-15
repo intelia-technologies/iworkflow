@@ -17,8 +17,8 @@ orchestrator:
   Loading 70 tools for a 5-tool task burns the limit on noise.
 - **Focus / quality.** A model offered 70 tools makes worse tool choices than one
   offered the 5 relevant ones (more distraction, more wrong calls).
-- **Catalog scale.** Intelia's real catalog is ~275 capabilities + many MCP
-  servers + ~50 skills + commands. At that scale you *cannot* inject everything —
+- **Catalog scale.** A real project's catalog can be hundreds of MCP tools plus
+  dozens of skills + commands. At that scale you *cannot* inject everything —
   selection stops being an optimization and becomes a requirement.
 
 Claude Code already solves this for its own loop via **deferred tools** loaded on
@@ -31,8 +31,8 @@ orchestrates** (Codex / Gemini / Claude), per task.
 - Inject only the tools/skills/commands a task needs, per `agent()` call.
 - Stay **provider-agnostic** in the core; each adapter translates a selected
   toolset into its CLI's flags.
-- Keep iworkflow **catalog-agnostic**: the catalog is a generic registry; Intelia
-  (or any user) supplies its catalog through a loader. No Intelia coupling in core.
+- Keep iworkflow **catalog-agnostic**: the catalog is a generic registry; the host
+  project (or any user) supplies its catalog through a loader. No host coupling in core.
 - Be measurable: prove the context/quota savings empirically.
 
 **Non-goals (for v1)**
@@ -50,7 +50,7 @@ orchestrates** (Codex / Gemini / Claude), per task.
  │ (generic reg) │              └──────┬───────┘
  └───────────────┘                     │ per-provider injection
    ▲ loaded by a CatalogProvider       ▼
-   │ (Intelia loader reads .mcp.json,  Provider adapter → CLI flags
+   │ (project loader reads .mcp.json,  Provider adapter → CLI flags
    │  .claude/skills, .codex/config)   (claude --mcp-config / codex -c / agy)
 ```
 
@@ -94,19 +94,21 @@ class ToolCatalog:
 ```
 
 **Catalog source (decided: generic/OSS).** iworkflow ships an empty `ToolCatalog`
-+ a `CatalogProvider` protocol. Intelia supplies its catalog via its own loader
-(a separate module that reads `.mcp.json`, `.claude/skills/`, `.codex/config.toml`
-and calls `catalog.register(...)`). iworkflow core never imports Intelia.
++ a `CatalogProvider` protocol. The host project supplies its catalog via its own
+loader (a separate module that reads `.mcp.json`, `.claude/skills/`,
+`.codex/config.toml` and calls `catalog.register(...)`). iworkflow core never
+imports the host project. (iworkflow ships a generic `load_project_catalog(root)`
+that does exactly this for any repo — see `iworkflow/catalog_loaders.py`.)
 
 ```python
 class CatalogProvider(Protocol):
     def populate(self, catalog: ToolCatalog) -> None: ...
-# Intelia ships e.g. IntelaCatalogProvider; iworkflow ships none (or tiny demo).
+# A host project can ship its own CatalogProvider; iworkflow ships the generic loader.
 ```
 
 ## Selection strategies (phased)
 
-- **Phase 1 — explicit.** `agent(prompt, tools=["postgres", "holded.read"])`.
+- **Phase 1 — explicit.** `agent(prompt, tools=["postgres", "github.search"])`.
   Names/tags resolved against the catalog. Deterministic; the workflow author
   knows what each phase needs. **This is the MVP.**
 - **Phase 2 — tags / keywords.** A `select(task, catalog)` that matches task text
@@ -133,7 +135,7 @@ Notes:
   prompt injection; native-tool allow-listing may not be controllable.
 - **SKILL/COMMAND injection is pure prompt context.** A skill is just instructions;
   "injecting a skill" = appending its body to the worker prompt *only when selected*
-  (vs always-loaded). This is the biggest context win for the Intelia catalog
+  (vs always-loaded). This is the biggest context win for a large catalog
   (skill bodies are KBs each).
 
 ## API surface
@@ -180,16 +182,16 @@ without this measurement.**
    Codex injection (best flags) + a measurement harness. (agy: prompt-injection
    + temp mcp_config only.)
 2. Tag/keyword `select()` + a small always-on core set.
-3. Intelia `CatalogProvider` (reads its real catalog) — lives in intelia-admin,
-   not iworkflow.
-4. Tool-RAG retrieval for the full 275-item catalog; optional missing-tool loop.
+3. A host-project `CatalogProvider` (reads its real catalog) — lives in that
+   project, not iworkflow.
+4. Tool-RAG retrieval for the full catalog; optional missing-tool loop.
 
 ## Open questions
 
 - Selection accuracy / how to evaluate over- vs under-selection.
 - agy granularity — is native-tool allow-listing possible at all?
 - Embedding source + cost for tool-RAG (and whether a cheap LLM selector beats it).
-- Catalog freshness — Intelia's catalog changes; the loader must re-read per run.
+- Catalog freshness — the host project's catalog changes; the loader must re-read per run.
 - Does injecting an MCP server per call add startup latency that eats the savings?
   (measure: MCP server spawn time vs context tokens saved.)
 ```
