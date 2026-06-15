@@ -17,9 +17,11 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable
 
 from .ledger import LedgerRecord, RunLedger, sha
+from .learn import adjust_order
 from .providers import Provider, ProviderError, RateLimited
 from .routing import KIND_ROUTES as ROUTES  # re-exported for callers
 from .routing import route
+from .stats import provider_stats
 
 
 def log(msg: str) -> None:
@@ -55,12 +57,14 @@ class AgentResult:
 class Runner:
     def __init__(self, run_id: str, providers: dict[str, Provider],
                  caps: dict[str, int], journal_dir: str = ".iworkflow",
-                 cooldown_s: float = 0.0):
+                 cooldown_s: float = 0.0, learn: bool = False):
         self.run_id = run_id
         self.providers = providers
         self.sems = {name: asyncio.Semaphore(caps.get(name, 2)) for name in providers}
         self.caps = caps
         self.cooldown_s = cooldown_s   # >0: skip a provider for this long after it throttles
+        # learn=True: demote providers that have been failing across past ledgers
+        self._stats = provider_stats(journal_dir) if learn else {}
         self.ledger = RunLedger(run_id, journal_dir)
         self._done: dict[str, AgentResult] = self._load_done()
 
@@ -100,6 +104,10 @@ class Runner:
         else:
             order, why = route(role, schema=schema, prompt=prompt,
                                available=list(self.providers))
+            if self._stats:                              # empirical demotion
+                adjusted = adjust_order(order, self._stats)
+                if adjusted != order:
+                    why, order = f"{why}→learned", adjusted
         log(f"ROUTE    {label}: {why} → {order}")
         attempts: list[Attempt] = []
         for name in order:
