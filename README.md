@@ -50,17 +50,23 @@ interactive driver and delicate cores.
 
 ## Status
 
-Early spike. Proven so far:
+Proven so far:
 
-- Deterministic scheduler — per-provider cap, cross-subscription failover, and
-  journal resume (run `python3 examples/demo_fakes.py`, 3/3).
-- Live adapters — `codex exec --output-schema` and `agy -p` round-trip real
-  structured output on the subscription (`python3 examples/demo_live.py`).
+- Deterministic scheduler — per-provider cap, cross-subscription failover, durable
+  ledger resume, `parallel()` + `pipeline()` (`.venv/bin/python -m pytest -q`, 24
+  tests; `python3 examples/demo_fakes.py`, 5/5).
+- Live adapters — `codex exec --output-schema`, `agy -p`, and **interactive Claude
+  via tmux (Pool 1)** round-trip real structured output on the subscription.
+- Capability-aware default routing (`python3 examples/demo_routing.py`).
+- Durable run ledger (`iworkflow/ledger.py`) and the test suite were **built by
+  iworkflow orchestrating itself** (`examples/build_ledger.py`, `build_tests.py`).
+- **MCP face works**: `codex exec` drove the engine via the `iworkflow_*` MCP tools
+  — the original goal (`bash examples/codex_drives_iworkflow.sh`). The same server
+  (`python -m iworkflow.mcp_server`) is reachable from agy and Claude too.
 
-Roadmap: `pipeline()` primitive · per-CLI rate-limit pattern tuning · interactive
-tmux/pty backend for Claude (Pool-1 worker) · MCP-server face (`iworkflow
-mcp-server`) so Codex/Gemini/Claude can call `workflow(script)` as a tool ·
-worktree-per-agent isolation · progress TUI.
+Roadmap: throttle-aware resume loop on the ledger · worktree-per-agent isolation
+for write workers · tmux backend hardening for long prose · empirical routing
+(learn best provider per task-kind from the ledger) · progress TUI.
 
 ## Design notes
 

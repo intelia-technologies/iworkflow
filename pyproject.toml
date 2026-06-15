@@ -11,6 +11,10 @@ dependencies = []  # core runtime is stdlib-only by design
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+mcp = ["mcp>=1.2"]   # optional MCP face — lets Codex/agy/Claude DRIVE workflows
+
+[project.scripts]
+iworkflow-mcp = "iworkflow.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
