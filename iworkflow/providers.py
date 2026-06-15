@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .minijsonschema import validate
+from .toolsets import ToolSet
 
 
 class RateLimited(Exception):
@@ -40,6 +41,29 @@ _LIMIT_PATTERNS = re.compile(
 )
 
 
+def _prompt_with_toolset(prompt: str, toolset: ToolSet | None) -> str:
+    if toolset is None or toolset.is_empty():
+        return prompt
+    additions = toolset.prompt_additions()
+    if not additions:
+        return prompt
+    return f"{additions}\n\n{prompt}"
+
+
+def _toml_string(value: Any) -> str:
+    return json.dumps(str(value))
+
+
+def _toml_array(values: Any) -> str:
+    if values is None:
+        seq: list[Any] = []
+    elif isinstance(values, (list, tuple)):
+        seq = list(values)
+    else:
+        seq = [values]
+    return json.dumps([str(value) for value in seq], separators=(",", ":"))
+
+
 @dataclass
 class Provider:
     """Base provider. Real adapters override `_argv` + output handling."""
@@ -56,6 +80,7 @@ class Provider:
         schema: dict[str, Any] | None,
         sandbox: str,
         cwd: str | None = None,
+        toolset: ToolSet | None = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -104,20 +129,37 @@ class CodexProvider(Provider):
         schema: dict[str, Any] | None,
         sandbox: str = "read-only",
         cwd: str | None = None,
+        toolset: ToolSet | None = None,
     ) -> Any:
         schema_file = out_file = None
         try:
+            full_prompt = _prompt_with_toolset(prompt, toolset)
             argv = ["codex", "exec", "--sandbox", sandbox,
                     "--skip-git-repo-check", "--color", "never"]
             if self.model:
                 argv += ["-m", self.model]
+            mcp_servers = (toolset.mcp_servers()
+                           if toolset is not None and not toolset.is_empty() else {})
+            if mcp_servers:
+                argv += ["--ignore-user-config"]
+                for name, cfg in mcp_servers.items():
+                    prefix = f"mcp_servers.{name}"
+                    if "url" in cfg:
+                        argv += ["-c", f"{prefix}.url={_toml_string(cfg['url'])}"]
+                    else:
+                        if "command" in cfg:
+                            argv += ["-c",
+                                     f"{prefix}.command={_toml_string(cfg['command'])}"]
+                        argv += ["-c", f"{prefix}.args={_toml_array(cfg.get('args', []))}"]
+                # Codex exec has no clean per-call native-tool allow-list flag;
+                # ToolSet.allowed() is intentionally not rendered here.
             if schema:
                 fd, schema_file = tempfile.mkstemp(suffix=".schema.json")
                 os.write(fd, json.dumps(schema).encode()); os.close(fd)
                 fd, out_file = tempfile.mkstemp(suffix=".out.json"); os.close(fd)
                 argv += ["--output-schema", schema_file, "-o", out_file]
             argv += ["-"]
-            code, stdout, stderr = await self._exec(argv, prompt, cwd=cwd)
+            code, stdout, stderr = await self._exec(argv, full_prompt, cwd=cwd)
             self._classify(code, stdout + "\n" + stderr)
             if schema:
                 payload = json.loads(open(out_file).read() or "{}")
@@ -140,9 +182,11 @@ class ClaudeProvider(Provider):
         schema: dict[str, Any] | None,
         sandbox: str = "read-only",
         cwd: str | None = None,
+        toolset: ToolSet | None = None,
     ) -> Any:
-        schema_file = None
+        schema_file = mcp_file = None
         try:
+            full_prompt = _prompt_with_toolset(prompt, toolset)
             # Workers start LEAN: --strict-mcp-config skips the repo's heavy MCP
             # stack and --setting-sources user skips project settings/hooks, so a
             # worker spawns in ~4s instead of timing out loading the orchestrator's
@@ -152,11 +196,22 @@ class ClaudeProvider(Provider):
                     "--permission-mode", "plan"]  # plan = read-only-ish for the spike
             if self.model:
                 argv += ["--model", self.model]
+            mcp_servers = (toolset.mcp_servers()
+                           if toolset is not None and not toolset.is_empty() else {})
+            if mcp_servers:
+                fd, mcp_file = tempfile.mkstemp(suffix=".mcp.json")
+                os.write(fd, json.dumps({"mcpServers": mcp_servers}).encode())
+                os.close(fd)
+                argv += ["--mcp-config", mcp_file]
+            allowed = (toolset.allowed()
+                       if toolset is not None and not toolset.is_empty() else [])
+            if allowed:
+                argv += ["--allowedTools", *allowed]
             if schema:
                 fd, schema_file = tempfile.mkstemp(suffix=".schema.json")
                 os.write(fd, json.dumps(schema).encode()); os.close(fd)
                 argv += ["--json-schema", schema_file]
-            code, stdout, stderr = await self._exec(argv, prompt, cwd=cwd)
+            code, stdout, stderr = await self._exec(argv, full_prompt, cwd=cwd)
             self._classify(code, stdout + "\n" + stderr)
             envelope = json.loads(stdout)            # claude -p --output-format json envelope
             result = envelope.get("result", envelope)
@@ -168,8 +223,9 @@ class ClaudeProvider(Provider):
                 return payload
             return result if isinstance(result, str) else json.dumps(result)
         finally:
-            if schema_file and os.path.exists(schema_file):
-                os.unlink(schema_file)
+            for f in (schema_file, mcp_file):
+                if f and os.path.exists(f):
+                    os.unlink(f)
 
 
 class GeminiProvider(Provider):
@@ -185,11 +241,12 @@ class GeminiProvider(Provider):
         schema: dict[str, Any] | None,
         sandbox: str = "read-only",
         cwd: str | None = None,
+        toolset: ToolSet | None = None,
     ) -> Any:
         argv = ["agy", "-p"]
         if self.model:
             argv += ["--model", self.model]
-        full = prompt
+        full = _prompt_with_toolset(prompt, toolset)
         if schema:
             full += ("\n\nReturn ONLY a JSON object matching this schema, "
                      "wrapped in ```json ... ```:\n" + json.dumps(schema))
@@ -231,6 +288,7 @@ class FakeProvider(Provider):
         schema: dict[str, Any] | None,
         sandbox: str = "read-only",
         cwd: str | None = None,
+        toolset: ToolSet | None = None,
     ) -> Any:
         self._calls += 1
         if self._calls <= self.limit_first_n:
@@ -301,10 +359,11 @@ class ClaudeInteractiveProvider(Provider):
         schema: dict[str, Any] | None,
         sandbox: str = "read-only",
         cwd: str | None = None,
+        toolset: ToolSet | None = None,
     ) -> Any:
         self._seq += 1
         session = f"iwf-{os.getpid()}-{self._seq}"
-        full = prompt
+        full = _prompt_with_toolset(prompt, toolset)
         if schema:
             full += ("\n\nOutput ONLY one compact single-line JSON object matching "
                      "this schema — no code fences, no commentary:\n" + json.dumps(schema))
