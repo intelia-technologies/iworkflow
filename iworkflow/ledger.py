@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,9 @@ class LedgerRecord:
     ts_end: float
     error_class: str | None
     retry_after: float | None
+    # telemetry for analysis / agent crystallization (added 0.2; optional):
+    kind: str | None = None                          # routing decision (inferred/role/explicit)
+    tools: list[str] = field(default_factory=list)   # tool/skill names injected for this agent
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping for persistence."""

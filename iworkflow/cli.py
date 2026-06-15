@@ -64,6 +64,17 @@ def _cmd_register(root: str, *, codex: bool, claude: bool) -> None:
           "(iworkflow_ping, iworkflow_workflow).")
 
 
+def _cmd_stats(journal_dir: str, run_id: str | None) -> None:
+    from .stats import provider_stats, run_summary
+
+    summary = run_summary(journal_dir, run_id)
+    if summary:
+        print("run summary:")
+        print(json.dumps(summary, indent=2))
+    print("\nper-provider (all runs):")
+    print(json.dumps(provider_stats(journal_dir), indent=2))
+
+
 def _cmd_catalog(root: str) -> None:
     from collections import Counter
 
@@ -95,6 +106,10 @@ def main(argv: list[str] | None = None) -> None:
     p_cat = sub.add_parser("catalog", help="show the tool catalog discovered in a repo")
     p_cat.add_argument("--root", default=".")
 
+    p_stats = sub.add_parser("stats", help="show telemetry from past runs (the logs)")
+    p_stats.add_argument("--journal-dir", default=".iworkflow")
+    p_stats.add_argument("--run-id", default=None)
+
     args = parser.parse_args(argv)
     if args.cmd == "serve":
         from .mcp_server import main as serve
@@ -103,6 +118,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_register(args.root, codex=args.codex, claude=args.claude)
     elif args.cmd == "catalog":
         _cmd_catalog(args.root)
+    elif args.cmd == "stats":
+        _cmd_stats(args.journal_dir, args.run_id)
 
 
 if __name__ == "__main__":
