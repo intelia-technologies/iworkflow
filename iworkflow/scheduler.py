@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable
 from .ledger import LedgerRecord, RunLedger, sha
 from .learn import adjust_order
 from .providers import Provider, ProviderError, RateLimited
-from .routing import KIND_ROUTES as ROUTES  # re-exported for callers
+from .routing import KIND_ROUTES as ROUTES  # noqa: F401 — re-exported as iworkflow.ROUTES
 from .routing import route
 from .stats import provider_stats
 from .toolsets import ToolCatalog

@@ -155,8 +155,10 @@ class CodexProvider(Provider):
                 # ToolSet.allowed() is intentionally not rendered here.
             if schema:
                 fd, schema_file = tempfile.mkstemp(suffix=".schema.json")
-                os.write(fd, json.dumps(schema).encode()); os.close(fd)
-                fd, out_file = tempfile.mkstemp(suffix=".out.json"); os.close(fd)
+                os.write(fd, json.dumps(schema).encode())
+                os.close(fd)
+                fd, out_file = tempfile.mkstemp(suffix=".out.json")
+                os.close(fd)
                 argv += ["--output-schema", schema_file, "-o", out_file]
             argv += ["-"]
             code, stdout, stderr = await self._exec(argv, full_prompt, cwd=cwd)
@@ -209,7 +211,8 @@ class ClaudeProvider(Provider):
                 argv += ["--allowedTools", *allowed]
             if schema:
                 fd, schema_file = tempfile.mkstemp(suffix=".schema.json")
-                os.write(fd, json.dumps(schema).encode()); os.close(fd)
+                os.write(fd, json.dumps(schema).encode())
+                os.close(fd)
                 argv += ["--json-schema", schema_file]
             code, stdout, stderr = await self._exec(argv, full_prompt, cwd=cwd)
             self._classify(code, stdout + "\n" + stderr)
