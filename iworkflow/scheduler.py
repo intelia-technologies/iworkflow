@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -82,7 +82,10 @@ class Runner:
             for line in self.journal_path.read_text().splitlines():
                 if not line.strip():
                     continue
-                rec = json.loads(line)
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue          # skip a partial line left by a crash mid-write
                 if rec["status"] == "DONE":
                     done[rec["label"]] = AgentResult(
                         label=rec["label"], status="DONE", provider=rec["provider"],
@@ -101,19 +104,22 @@ class Runner:
                     role: str = "doer", prefer: list[str] | None = None) -> AgentResult:
         if label in self._done:
             log(f"RESUMED  {label}  (cached, 0 tokens)")
-            return self._done[label]
+            return replace(self._done[label], resumed=True)   # always flag cache hits
 
         order = [p for p in (prefer or ROUTES.get(role, ["codex"])) if p in self.providers]
         attempts: list[Attempt] = []
         for name in order:
             prov = self.providers[name]
-            use_schema = schema if prov.supports_schema or schema is None else schema
+            # each provider handles its own schema capability (gemini parses a JSON
+            # block; codex/claude use a native schema) — just pass it through.
+            use_schema = schema
             async with self.sems[name]:
                 log(f"DISPATCH {label} → {name} (cap {self.caps.get(name)})")
                 try:
                     value = await prov.run(prompt, schema=use_schema, sandbox="read-only")
                     attempts.append(Attempt(name, "DONE"))
                     res = AgentResult(label, "DONE", name, value, attempts)
+                    self._done[label] = res      # within-process dedup, not just cross-process
                     self._persist(res)
                     log(f"DONE     {label} ← {name}")
                     return res
