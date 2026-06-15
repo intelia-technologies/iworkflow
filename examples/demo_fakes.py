@@ -88,11 +88,29 @@ async def scenario_3_resume() -> bool:
     return ok
 
 
+async def scenario_4_pipeline() -> bool:
+    print("\n── Scenario 4: pipeline (per-item fix→verify, no barrier) ──")
+    fresh()
+    r = Runner("pipe", {"codex": FakeProvider("codex"), "gemini": FakeProvider("gemini")},
+               caps={"codex": 4, "gemini": 4}, journal_dir=JOURNAL)
+    items = ["scorer", "prompts", "dataset"]
+    out = await r.pipeline(
+        items,
+        lambda prev, it, i: r.agent(f"fix {it}", label=f"fix:{it}", schema=RESULT, role="doer"),
+        lambda prev, it, i: r.agent(f"verify {it} (fixer said: {prev.value})",
+                                    label=f"verify:{it}", role="auditor"),
+    )
+    ok = len(out) == 3 and all(x is not None and x.ok for x in out)
+    print(f"   3 items through 2 stages, all DONE={ok} → {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 async def main() -> int:
     fresh()
     results = [await scenario_1_cap(),
                await scenario_2_failover(),
-               await scenario_3_resume()]
+               await scenario_3_resume(),
+               await scenario_4_pipeline()]
     fresh()
     passed = sum(results)
     print(f"\n═══ {passed}/{len(results)} scenarios PASS ═══")

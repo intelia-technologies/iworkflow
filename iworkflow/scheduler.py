@@ -134,3 +134,23 @@ class Runner:
     async def parallel(self, thunks: list[Callable[[], Awaitable[AgentResult]]]
                        ) -> list[AgentResult]:
         return list(await asyncio.gather(*(t() for t in thunks)))
+
+    # --- the pipeline() — per-item staged flow, NO barrier between stages -
+    async def pipeline(self, items: list[Any],
+                       *stages: Callable[[Any, Any, int], Awaitable[Any]]) -> list[Any]:
+        """Run each item through all stages independently. Item A can be in
+        stage 3 while item B is still in stage 1 (no barrier). Each stage is
+        `await stage(prev_result, original_item, index)`; stage 1's prev is the
+        item itself. A stage that raises drops that item to None. Concurrency is
+        bounded naturally by the per-provider semaphores inside agent()."""
+        async def run_item(item: Any, idx: int) -> Any:
+            val = item
+            for stage in stages:
+                try:
+                    val = await stage(val, item, idx)
+                except Exception as e:        # noqa: BLE001 — drop item, keep batch
+                    log(f"PIPELINE item {idx} dropped at a stage: {str(e)[:80]}")
+                    return None
+            return val
+        return list(await asyncio.gather(
+            *(run_item(it, i) for i, it in enumerate(items))))
