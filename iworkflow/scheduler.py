@@ -91,7 +91,9 @@ class Runner:
 
     def _record(self, res: AgentResult, *, prompt: str, schema: dict | None,
                 attempts: list[Attempt], t_start: float,
-                kind: str | None = None, tools: tuple[str, ...] = ()) -> None:
+                kind: str | None = None, tools: tuple[str, ...] = (),
+                usage: dict[str, Any] | None = None) -> None:
+        u = usage or {}
         self.ledger.append(LedgerRecord(
             run_id=self.run_id, label=res.label, status=res.status,
             provider=res.provider, value=res.value,
@@ -101,7 +103,9 @@ class Runner:
             ts_start=t_start, ts_end=time.time(),
             error_class=(attempts[-1].outcome if res.status == "EXHAUSTED" and attempts
                          else None),
-            retry_after=None, kind=kind, tools=list(tools)))
+            retry_after=None, kind=kind, tools=list(tools),
+            input_tokens=u.get("input_tokens"), output_tokens=u.get("output_tokens"),
+            cost_usd=u.get("cost_usd")))
 
     # --- the agent() primitive -------------------------------------------
     async def agent(self, prompt: str, *, label: str, schema: dict | None = None,
@@ -155,13 +159,18 @@ class Runner:
                 try:
                     value = await prov.run(prompt, schema=use_schema,
                                            sandbox=sandbox, cwd=cwd, toolset=toolset)
+                    # read usage immediately (no await between → race-free in asyncio)
+                    usage = getattr(prov, "last_usage", None) or {}
                     attempts.append(Attempt(name, "DONE"))
                     res = AgentResult(label, "DONE", name, value, attempts)
                     self._done[label] = res      # within-process dedup, not just cross-process
                     self._record(res, prompt=prompt, schema=schema, attempts=attempts,
-                                 t_start=t_start, kind=why, tools=tool_names)
+                                 t_start=t_start, kind=why, tools=tool_names, usage=usage)
                     self._emit(label, "done", provider=name,
-                               ms=round((time.time() - t_start) * 1000))
+                               ms=round((time.time() - t_start) * 1000),
+                               input_tokens=usage.get("input_tokens"),
+                               output_tokens=usage.get("output_tokens"),
+                               cost_usd=usage.get("cost_usd"))
                     log(f"DONE     {label} ← {name}")
                     return res
                 except RateLimited as e:

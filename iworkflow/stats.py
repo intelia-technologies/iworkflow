@@ -96,6 +96,7 @@ def run_summary(journal_dir: str = ".iworkflow",
     closed = len(done) + len(resumed) + len(exhausted)
     ts = [e["ts"] for e in events if "ts" in e]
     lat = [e["ms"] for e in done if isinstance(e.get("ms"), (int, float))]
+    cost = sum(e.get("cost_usd") or 0 for e in done)
     return {
         "run_id": run_id,
         "agents": closed,
@@ -108,4 +109,7 @@ def run_summary(journal_dir: str = ".iworkflow",
         "by_kind": dict(Counter(e.get("kind") for e in routes)),
         "duration_ms": round(max(ts) - min(ts), 3) * 1000 if len(ts) > 1 else 0,
         "avg_agent_ms": round(sum(lat) / len(lat)) if lat else None,
+        "input_tokens": sum(e.get("input_tokens") or 0 for e in done),
+        "output_tokens": sum(e.get("output_tokens") or 0 for e in done),
+        "cost_usd": round(cost, 6) if cost else 0,
     }

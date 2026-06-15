@@ -121,6 +121,22 @@ class Provider:
         return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 
 
+def _parse_codex_usage(stdout: str) -> dict[str, Any] | None:
+    """Pull token usage from a codex --json `turn.completed` event."""
+    for line in stdout.splitlines():
+        if '"usage"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        usage = event.get("usage")
+        if event.get("type") == "turn.completed" and isinstance(usage, dict):
+            return {"input_tokens": usage.get("input_tokens"),
+                    "output_tokens": usage.get("output_tokens"), "cost_usd": None}
+    return None
+
+
 class CodexProvider(Provider):
     async def run(
         self,
@@ -131,11 +147,16 @@ class CodexProvider(Provider):
         cwd: str | None = None,
         toolset: ToolSet | None = None,
     ) -> Any:
-        schema_file = out_file = None
+        self.last_usage: dict[str, Any] | None = None
+        schema_file = None
+        fd, out_file = tempfile.mkstemp(suffix=".out")
+        os.close(fd)
         try:
             full_prompt = _prompt_with_toolset(prompt, toolset)
-            argv = ["codex", "exec", "--sandbox", sandbox,
-                    "--skip-git-repo-check", "--color", "never"]
+            # --json puts events (incl. token usage) on stdout; -o writes the final
+            # message to a file (so the answer survives the event stream).
+            argv = ["codex", "exec", "--sandbox", sandbox, "--skip-git-repo-check",
+                    "--color", "never", "--json", "-o", out_file]
             if self.model:
                 argv += ["-m", self.model]
             mcp_servers = (toolset.mcp_servers()
@@ -157,19 +178,19 @@ class CodexProvider(Provider):
                 fd, schema_file = tempfile.mkstemp(suffix=".schema.json")
                 os.write(fd, json.dumps(schema).encode())
                 os.close(fd)
-                fd, out_file = tempfile.mkstemp(suffix=".out.json")
-                os.close(fd)
-                argv += ["--output-schema", schema_file, "-o", out_file]
+                argv += ["--output-schema", schema_file]
             argv += ["-"]
             code, stdout, stderr = await self._exec(argv, full_prompt, cwd=cwd)
             self._classify(code, stdout + "\n" + stderr)
+            self.last_usage = _parse_codex_usage(stdout)
+            answer = open(out_file).read()
             if schema:
-                payload = json.loads(open(out_file).read() or "{}")
+                payload = json.loads(answer or "{}")
                 ok, why = validate(payload, schema)
                 if not ok:
                     raise ProviderError(f"schema mismatch: {why}")
                 return payload
-            return stdout.strip()
+            return answer.strip()
         finally:
             for f in (schema_file, out_file):
                 if f and os.path.exists(f):
@@ -186,6 +207,7 @@ class ClaudeProvider(Provider):
         cwd: str | None = None,
         toolset: ToolSet | None = None,
     ) -> Any:
+        self.last_usage: dict[str, Any] | None = None
         schema_file = mcp_file = None
         try:
             full_prompt = _prompt_with_toolset(prompt, toolset)
@@ -217,6 +239,11 @@ class ClaudeProvider(Provider):
             code, stdout, stderr = await self._exec(argv, full_prompt, cwd=cwd)
             self._classify(code, stdout + "\n" + stderr)
             envelope = json.loads(stdout)            # claude -p --output-format json envelope
+            usage = envelope.get("usage") if isinstance(envelope, dict) else None
+            if isinstance(usage, dict):
+                self.last_usage = {"input_tokens": usage.get("input_tokens"),
+                                   "output_tokens": usage.get("output_tokens"),
+                                   "cost_usd": envelope.get("total_cost_usd")}
             result = envelope.get("result", envelope)
             if schema:
                 payload = result if isinstance(result, dict) else json.loads(result)
@@ -294,6 +321,7 @@ class FakeProvider(Provider):
         toolset: ToolSet | None = None,
     ) -> Any:
         self._calls += 1
+        self.last_usage = {"input_tokens": 10, "output_tokens": 5, "cost_usd": None}
         if self._calls <= self.limit_first_n:
             raise RateLimited(f"{self.name}: simulated session limit (call {self._calls})")
         self._active += 1

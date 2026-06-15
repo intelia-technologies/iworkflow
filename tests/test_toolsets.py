@@ -189,7 +189,11 @@ class CapturingCodexProvider(CodexProvider):
     async def _exec(self, argv, stdin, cwd=None):
         self.argv = argv
         self.stdin = stdin
-        return 0, "codex ok", ""
+        # CodexProvider now reads the answer from the -o file (stdout is the --json
+        # event stream); mirror that so the captured result round-trips.
+        with open(argv[argv.index("-o") + 1], "w") as fh:
+            fh.write("codex ok")
+        return 0, "", ""
 
 
 def test_codex_provider_injects_prompt_and_mcp_flags():

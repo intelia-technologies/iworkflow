@@ -34,16 +34,16 @@ Nothing here spends tokens — it's a side effect of running.
   the ledger shows failing. **This is the first, narrow form of "learning from the
   logs."**
 
-## Next telemetry fields (proposed)
+## Telemetry fields
 
-- **Tokens + cost per agent.** The providers can surface usage — Claude's
-  `-p --output-format json` envelope carries `.usage.input_tokens/output_tokens`;
-  Codex's `--json` event stream carries token counts. Capture them into the event
-  + ledger so `run_summary` reports tokens/cost per run, per provider, per kind.
-  (`examples/measure_toolsets.py` already proves the per-MCP-server schema cost;
-  this makes it per-agent and continuous.)
-- **Task text (truncated) + outcome quality.** For deep analysis you want more
-  than `prompt_sha`. Opt-in (privacy/size), e.g. first N chars + a verdict field.
+- **Tokens + cost per agent — shipped (v0.2).** Providers surface usage as a
+  race-free `last_usage` side-channel read right after each call: Codex parses
+  its `--json` `turn.completed.usage` (input/output tokens); Claude reads the
+  `-p --output-format json` envelope `.usage` + `.total_cost_usd`; Gemini/tmux
+  report none (best-effort → `None`). Captured into the `done` event + the ledger
+  record (`input_tokens`/`output_tokens`/`cost_usd`); `run_summary` sums them.
+- **Next — task text (truncated) + outcome quality.** For deep analysis you want
+  more than `prompt_sha`. Opt-in (privacy/size), e.g. first N chars + a verdict.
 
 ## Aspirational: agent crystallization
 

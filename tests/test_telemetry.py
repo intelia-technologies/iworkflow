@@ -32,6 +32,10 @@ def test_events_log_captures_full_trace_and_run_summary(tmp_path):
     assert summary["failovers"] >= 1                            # codex limited → gemini
     assert summary["by_provider"] == {"gemini": 1}
     assert summary["success_rate"] == 1.0
+    assert summary["input_tokens"] == 10                        # provider-reported usage
+    assert summary["output_tokens"] == 5
+    done = next(e for e in events if e["event"] == "done")
+    assert done["input_tokens"] == 10 and done["output_tokens"] == 5
 
 
 def test_ledger_record_carries_kind_and_tools(tmp_path):

@@ -49,6 +49,9 @@ class LedgerRecord:
     # telemetry for analysis / agent crystallization (added 0.2; optional):
     kind: str | None = None                          # routing decision (inferred/role/explicit)
     tools: list[str] = field(default_factory=list)   # tool/skill names injected for this agent
+    input_tokens: int | None = None                  # provider-reported usage (best-effort)
+    output_tokens: int | None = None
+    cost_usd: float | None = None                    # if the provider reports cost (Claude)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping for persistence."""
