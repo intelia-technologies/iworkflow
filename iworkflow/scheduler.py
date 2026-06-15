@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .providers import Provider, ProviderError, RateLimited
+from .routing import KIND_ROUTES as ROUTES  # re-exported for callers
+from .routing import route
 
 
 def log(msg: str) -> None:
@@ -45,23 +47,9 @@ class AgentResult:
         return self.status == "DONE"
 
 
-# Billing tiers (as of 2026-06-15):
-#   codex  (`codex exec`, ChatGPT login)  → SUBSCRIPTION  (included Codex usage)
-#   gemini (`agy -p`, Google login)        → SUBSCRIPTION
-#   claude (`claude -p` headless)          → POOL 2 / API-RATE CREDIT  (NOT subscription)
-#   claude (interactive TUI via tmux/pty)  → POOL 1 / SUBSCRIPTION  [future backend]
-#
-# Default routes are SUBSCRIPTION-ONLY: workers go to Codex + Gemini. Claude's
-# natural place is the interactive DRIVER (Pool 1 = the user's own session), not
-# a metered headless worker. "claude" only appears in opt-in metered routes.
-ROUTES = {
-    "doer":    ["codex", "gemini"],           # structured doers: codex native schema
-    "core":    ["codex", "gemini"],           # delicate cores stay on subscription
-    "auditor": ["gemini", "codex"],           # schema-less role → agy fits perfectly
-    "sweep":   ["gemini", "codex"],           # 1M-context sweeps → Gemini
-    # opt-in, METERED (Pool 2) — only if the user explicitly accepts API-rate credit:
-    "core_metered": ["codex", "claude"],
-}
+# Capability + scarcity aware default routing lives in routing.py (ROUTES is its
+# KIND_ROUTES, re-exported above). Billing context: codex/gemini = subscription,
+# claude interactive (tmux) = Pool-1 subscription, claude -p = Pool-2 (metered).
 
 
 class Runner:
@@ -101,12 +89,17 @@ class Runner:
 
     # --- the agent() primitive -------------------------------------------
     async def agent(self, prompt: str, *, label: str, schema: dict | None = None,
-                    role: str = "doer", prefer: list[str] | None = None) -> AgentResult:
+                    role: str | None = None, prefer: list[str] | None = None) -> AgentResult:
         if label in self._done:
             log(f"RESUMED  {label}  (cached, 0 tokens)")
             return replace(self._done[label], resumed=True)   # always flag cache hits
 
-        order = [p for p in (prefer or ROUTES.get(role, ["codex"])) if p in self.providers]
+        if prefer:
+            order, why = [p for p in prefer if p in self.providers], "explicit"
+        else:
+            order, why = route(role, schema=schema, prompt=prompt,
+                               available=list(self.providers))
+        log(f"ROUTE    {label}: {why} → {order}")
         attempts: list[Attempt] = []
         for name in order:
             prov = self.providers[name]
