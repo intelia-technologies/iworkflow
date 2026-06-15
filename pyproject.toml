@@ -1,6 +1,6 @@
 [project]
 name = "iworkflow"
-version = "0.0.1"
+version = "0.2.0"
 description = "Deterministic, subscription-only, rate-limit-aware dynamic-workflow orchestrator over coding-agent CLIs (Codex, Gemini, Claude)."
 readme = "README.md"
 requires-python = ">=3.11"

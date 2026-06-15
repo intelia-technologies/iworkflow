@@ -11,6 +11,7 @@ Zero API tokens (workers are the CLIs). Zero coordination tokens (this is code).
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
 from dataclasses import dataclass, field, replace
@@ -69,7 +70,15 @@ class Runner:
         # learn=True: demote providers that have been failing across past ledgers
         self._stats = provider_stats(journal_dir) if learn else {}
         self.ledger = RunLedger(run_id, journal_dir)
+        self._events_path = self.ledger.run_dir / "events.jsonl"
         self._done: dict[str, AgentResult] = self._load_done()
+
+    def _emit(self, label: str, event: str, **fields: Any) -> None:
+        """Append a structured telemetry event (the full execution trace)."""
+        rec = {"ts": time.time(), "run_id": self.run_id, "label": label,
+               "event": event, **fields}
+        with self._events_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, default=str) + "\n")
 
     # --- resume (durable ledger, see ledger.py) --------------------------
     def _load_done(self) -> dict[str, AgentResult]:
@@ -81,7 +90,8 @@ class Runner:
         return done
 
     def _record(self, res: AgentResult, *, prompt: str, schema: dict | None,
-                attempts: list[Attempt], t_start: float) -> None:
+                attempts: list[Attempt], t_start: float,
+                kind: str | None = None, tools: tuple[str, ...] = ()) -> None:
         self.ledger.append(LedgerRecord(
             run_id=self.run_id, label=res.label, status=res.status,
             provider=res.provider, value=res.value,
@@ -91,7 +101,7 @@ class Runner:
             ts_start=t_start, ts_end=time.time(),
             error_class=(attempts[-1].outcome if res.status == "EXHAUSTED" and attempts
                          else None),
-            retry_after=None))
+            retry_after=None, kind=kind, tools=list(tools)))
 
     # --- the agent() primitive -------------------------------------------
     async def agent(self, prompt: str, *, label: str, schema: dict | None = None,
@@ -102,6 +112,7 @@ class Runner:
                     auto_tools: int | None = None) -> AgentResult:
         if label in self._done:
             log(f"RESUMED  {label}  (cached, 0 tokens)")
+            self._emit(label, "resumed", provider=self._done[label].provider)
             return replace(self._done[label], resumed=True)   # always flag cache hits
 
         t_start = time.time()
@@ -113,6 +124,7 @@ class Runner:
             toolset = self.catalog.search(prompt, auto_tools)
         else:
             toolset = None
+        tool_names = tuple(s.name for s in toolset.specs) if toolset else ()
         if prefer:
             order, why = [p for p in prefer if p in self.providers], "explicit"
         else:
@@ -123,6 +135,7 @@ class Runner:
                 if adjusted != order:
                     why, order = f"{why}→learned", adjusted
         log(f"ROUTE    {label}: {why} → {order}")
+        self._emit(label, "route", kind=why, order=order, tools=list(tool_names))
         attempts: list[Attempt] = []
         for name in order:
             prov = self.providers[name]
@@ -131,20 +144,24 @@ class Runner:
             if self.cooldown_s and self.ledger.is_cooling(name, time.time()):
                 attempts.append(Attempt(name, "COOLING"))
                 log(f"COOLING  {label} ⏳ {name} (skip) → next")
+                self._emit(label, "cooling", provider=name)
                 continue
             # each provider handles its own schema capability (gemini parses a JSON
             # block; codex/claude use a native schema) — just pass it through.
             use_schema = schema
             async with self.sems[name]:
                 log(f"DISPATCH {label} → {name} (cap {self.caps.get(name)})")
+                self._emit(label, "dispatch", provider=name)
                 try:
                     value = await prov.run(prompt, schema=use_schema,
                                            sandbox=sandbox, cwd=cwd, toolset=toolset)
                     attempts.append(Attempt(name, "DONE"))
                     res = AgentResult(label, "DONE", name, value, attempts)
                     self._done[label] = res      # within-process dedup, not just cross-process
-                    self._record(res, prompt=prompt, schema=schema,
-                                 attempts=attempts, t_start=t_start)
+                    self._record(res, prompt=prompt, schema=schema, attempts=attempts,
+                                 t_start=t_start, kind=why, tools=tool_names)
+                    self._emit(label, "done", provider=name,
+                               ms=round((time.time() - t_start) * 1000))
                     log(f"DONE     {label} ← {name}")
                     return res
                 except RateLimited as e:
@@ -152,13 +169,17 @@ class Runner:
                     if self.cooldown_s:
                         self.ledger.record_cooldown(name, time.time() + self.cooldown_s)
                     log(f"LIMITED  {label} ✗ {name} → failover")
+                    self._emit(label, "limited", provider=name)
                     continue
                 except ProviderError as e:
                     attempts.append(Attempt(name, "ERROR", str(e)[:120]))
                     log(f"ERROR    {label} ✗ {name}: {str(e)[:80]} → failover")
+                    self._emit(label, "error", provider=name, detail=str(e)[:120])
                     continue
         res = AgentResult(label, "EXHAUSTED", None, None, attempts)
-        self._record(res, prompt=prompt, schema=schema, attempts=attempts, t_start=t_start)
+        self._record(res, prompt=prompt, schema=schema, attempts=attempts,
+                     t_start=t_start, kind=why, tools=tool_names)
+        self._emit(label, "exhausted", attempts=[a.provider for a in attempts])
         log(f"EXHAUSTED {label} — every subscription failed: "
             f"{[(a.provider, a.outcome) for a in attempts]}")
         return res
