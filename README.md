@@ -50,23 +50,28 @@ interactive driver and delicate cores.
 
 ## Status
 
-Proven so far:
+Proven so far (47 tests: `.venv/bin/python -m pytest -q`; `python3 examples/demo_fakes.py`, 5/5):
 
-- Deterministic scheduler — per-provider cap, cross-subscription failover, durable
-  ledger resume, `parallel()` + `pipeline()` (`.venv/bin/python -m pytest -q`, 24
-  tests; `python3 examples/demo_fakes.py`, 5/5).
-- Live adapters — `codex exec --output-schema`, `agy -p`, and **interactive Claude
-  via tmux (Pool 1)** round-trip real structured output on the subscription.
-- Capability-aware default routing (`python3 examples/demo_routing.py`).
-- Durable run ledger (`iworkflow/ledger.py`) and the test suite were **built by
-  iworkflow orchestrating itself** (`examples/build_ledger.py`, `build_tests.py`).
-- **MCP face works**: `codex exec` drove the engine via the `iworkflow_*` MCP tools
-  — the original goal (`bash examples/codex_drives_iworkflow.sh`). The same server
-  (`python -m iworkflow.mcp_server`) is reachable from agy and Claude too.
+- **Scheduler** — per-provider concurrency cap, cross-subscription failover,
+  throttle-aware cooldown, durable **run ledger** resume, `parallel()` + `pipeline()`.
+- **3 subscription workers, live** — `codex exec --output-schema`, `agy -p`, and
+  **interactive Claude via tmux (Pool 1)** round-trip real structured output.
+- **Routing** — capability-aware defaults (`demo_routing.py`) + **empirical** demotion
+  of providers the ledger shows failing (`Runner(learn=True)`).
+- **MCP face** — `codex exec` drove the engine via the `iworkflow_*` MCP tools (the
+  original goal: `examples/codex_drives_iworkflow.sh`); same server works from agy/Claude.
+- **Worktree isolation** — each WRITE worker on its own git worktree+branch
+  (`worktree.py`, `agent(cwd=)`), so parallel writers can't clobber.
+- **Dynamic toolsets** — inject only the tools/skills a task needs per `agent()`:
+  explicit `tools=[...]` → tags → `auto_tools=k` (keyword auto-select). A **portable**
+  loader (`load_project_catalog(root)`) discovers any project's catalog
+  (`.mcp.json`/`.claude/skills`/`.codex`); measured cost of injecting tool schemas
+  (`examples/measure_toolsets.py`).
+- **Self-built** — the ledger, the test suite, worktree isolation, and the toolset
+  system were each built BY iworkflow orchestrating Codex (write) + Gemini (audit).
 
-Roadmap: throttle-aware resume loop on the ledger · worktree-per-agent isolation
-for write workers · tmux backend hardening for long prose · empirical routing
-(learn best provider per task-kind from the ledger) · progress TUI.
+Roadmap: tool-RAG (embedding tool-retrieval at catalog scale) · always-on core
+toolset + missing-tool retry · tmux backend hardening for long prose · progress TUI.
 
 ## Design notes
 
