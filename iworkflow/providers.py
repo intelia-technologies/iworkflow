@@ -203,3 +203,113 @@ class FakeProvider(Provider):
             return payload
         finally:
             self._active -= 1
+
+
+def _find_schema_json(text: str, schema: dict | None) -> Any:
+    """Find the last JSON object in pane text that satisfies the schema."""
+    for m in reversed(re.findall(r"\{[^{}]*\}", text.replace("\n", " "))):
+        try:
+            obj = json.loads(m)
+        except Exception:
+            continue
+        if schema is None:
+            return obj
+        ok, _ = validate(obj, schema)
+        if ok:
+            return obj
+    return None
+
+
+@dataclass
+class ClaudeInteractiveProvider(Provider):
+    """Drive the INTERACTIVE `claude` TUI via tmux → stays on Pool 1
+    (subscription), unlike `claude -p` which is Pool 2 (API-rate credit).
+
+    No native schema → extracts a JSON object from the rendered pane (the
+    marker fallback). Shares the one weekly subscription limit, so the scheduler
+    must keep this provider's concurrency cap LOW (1-2) and treat it as opt-in.
+
+    Mechanics proven live: ready in ~3s, response prefixed with `⏺`, completion
+    by pane-stability + schema-valid JSON present.
+    """
+
+    supports_schema: bool = False
+    permission_mode: str = "plan"     # read-only-safe; use acceptEdits for real work
+    poll_s: float = 3.0
+    _seq: int = field(default=0, init=False)
+
+    async def _tmux(self, *args: str) -> str:
+        proc = await asyncio.create_subprocess_exec(
+            "tmux", *args,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, _ = await proc.communicate()
+        return out.decode(errors="replace")
+
+    async def _pane(self, session: str) -> str:
+        return await self._tmux("capture-pane", "-p", "-S", "-800", "-t", session)
+
+    async def run(self, prompt, *, schema, sandbox="read-only"):
+        self._seq += 1
+        session = f"iwf-{os.getpid()}-{self._seq}"
+        full = prompt
+        if schema:
+            full += ("\n\nOutput ONLY one compact single-line JSON object matching "
+                     "this schema — no code fences, no commentary:\n" + json.dumps(schema))
+        await self._tmux("kill-session", "-t", session)
+        try:
+            await self._tmux(
+                "new-session", "-d", "-s", session, "-x", "300", "-y", "50",
+                f"claude --strict-mcp-config --setting-sources user "
+                f"--permission-mode {self.permission_mode}")
+
+            # readiness
+            for _ in range(int(40 / self.poll_s) + 1):
+                p = await self._pane(session)
+                if any(m in p for m in ("plan mode", "Claude Max", "for shortcuts")):
+                    break
+                await asyncio.sleep(self.poll_s)
+            await asyncio.sleep(1.5)
+
+            baseline = await self._pane(session)
+            base_json = _find_schema_json(baseline, schema)
+
+            # send (bracketed paste handles multi-line; Enter submits)
+            await self._tmux("set-buffer", "--", full)
+            await self._tmux("paste-buffer", "-p", "-t", session)
+            await self._tmux("send-keys", "-t", session, "Enter")
+
+            # completion: pane stable + a fresh schema-valid JSON present
+            prev, stable = None, 0
+            max_polls = int(self.timeout_s / self.poll_s)
+            for _ in range(max_polls):
+                await asyncio.sleep(self.poll_s)
+                cur = await self._pane(session)
+                if _LIMIT_PATTERNS.search(cur):
+                    raise RateLimited(cur[-400:])
+                stable = stable + 1 if cur == prev else 0
+                prev = cur
+                cand = _find_schema_json(cur, schema)
+                if cand is not None and cand != base_json and stable >= 1:
+                    if schema:
+                        ok, why = validate(cand, schema)
+                        if not ok:
+                            raise ProviderError(f"schema mismatch: {why}")
+                    return cand if schema else _response_text(cur)
+            raise ProviderError("timed out waiting for interactive response")
+        finally:
+            await self._tmux("kill-session", "-t", session)
+
+
+def _response_text(pane: str) -> str:
+    """Schema-less: text of the last `⏺` response block, minus TUI chrome."""
+    if "⏺" in pane:
+        tail = pane.rsplit("⏺", 1)[1]
+    else:
+        tail = pane
+    lines = []
+    for ln in tail.splitlines():
+        s = ln.strip()
+        if not s or set(s) <= set("─—-") or s.startswith("❯") or "plan mode" in s:
+            continue
+        lines.append(s)
+    return "\n".join(lines).strip()
