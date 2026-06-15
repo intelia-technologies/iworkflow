@@ -99,6 +99,34 @@ def test_within_process_dedup_uses_first_result(tmp_path):
     assert provider._calls == 1
 
 
+def test_cooldown_skips_recently_throttled_provider(tmp_path):
+    codex = FakeProvider("codex", limit_first_n=1)   # only the first call throttles
+    gemini = FakeProvider("gemini")
+    runner = Runner(
+        "cooldown",
+        {"codex": codex, "gemini": gemini},
+        {"codex": 1, "gemini": 1},
+        journal_dir=str(tmp_path),
+        cooldown_s=300,
+    )
+
+    first = asyncio.run(runner.agent("job a", label="a", role="doer"))
+    second = asyncio.run(runner.agent("job b", label="b", role="doer"))
+
+    # first agent: codex throttles (records a cooldown) → fails over to gemini
+    assert [(a.provider, a.outcome) for a in first.attempts] == [
+        ("codex", "RATE_LIMITED"),
+        ("gemini", "DONE"),
+    ]
+    # second agent: codex is still cooling → skipped, NOT dispatched again → gemini
+    assert second.provider == "gemini"
+    assert [(a.provider, a.outcome) for a in second.attempts] == [
+        ("codex", "COOLING"),
+        ("gemini", "DONE"),
+    ]
+    assert codex._calls == 1   # codex was not hammered while throttled
+
+
 def test_cross_runner_resume_uses_ledger_without_dispatch(tmp_path):
     run_id = "cross-runner-resume"
     first_provider = FakeProvider("codex")

@@ -54,11 +54,13 @@ class AgentResult:
 
 class Runner:
     def __init__(self, run_id: str, providers: dict[str, Provider],
-                 caps: dict[str, int], journal_dir: str = ".iworkflow"):
+                 caps: dict[str, int], journal_dir: str = ".iworkflow",
+                 cooldown_s: float = 0.0):
         self.run_id = run_id
         self.providers = providers
         self.sems = {name: asyncio.Semaphore(caps.get(name, 2)) for name in providers}
         self.caps = caps
+        self.cooldown_s = cooldown_s   # >0: skip a provider for this long after it throttles
         self.ledger = RunLedger(run_id, journal_dir)
         self._done: dict[str, AgentResult] = self._load_done()
 
@@ -102,6 +104,12 @@ class Runner:
         attempts: list[Attempt] = []
         for name in order:
             prov = self.providers[name]
+            # throttle-aware: skip a provider still cooling down from a recent limit,
+            # so we don't waste an attempt hammering a known-throttled subscription.
+            if self.cooldown_s and self.ledger.is_cooling(name, time.time()):
+                attempts.append(Attempt(name, "COOLING"))
+                log(f"COOLING  {label} ⏳ {name} (skip) → next")
+                continue
             # each provider handles its own schema capability (gemini parses a JSON
             # block; codex/claude use a native schema) — just pass it through.
             use_schema = schema
@@ -118,6 +126,8 @@ class Runner:
                     return res
                 except RateLimited as e:
                     attempts.append(Attempt(name, "RATE_LIMITED", str(e)[:120]))
+                    if self.cooldown_s:
+                        self.ledger.record_cooldown(name, time.time() + self.cooldown_s)
                     log(f"LIMITED  {label} ✗ {name} → failover")
                     continue
                 except ProviderError as e:
