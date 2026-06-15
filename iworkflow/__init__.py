@@ -6,6 +6,7 @@ from .learn import adjust_order
 from .routing import CAPABILITIES, KIND_ROUTES, infer_kind, route
 from .scheduler import AgentResult, Runner, ROUTES, log
 from .stats import provider_stats
+from .toolsets import ToolCatalog, ToolKind, ToolSet, ToolSpec
 
 __all__ = [
     "Runner", "AgentResult", "ROUTES", "log",
@@ -13,4 +14,5 @@ __all__ = [
     "GeminiProvider", "FakeProvider", "RateLimited", "ProviderError",
     "CAPABILITIES", "KIND_ROUTES", "infer_kind", "route", "provider_stats",
     "adjust_order",
+    "ToolCatalog", "ToolKind", "ToolSet", "ToolSpec",
 ]

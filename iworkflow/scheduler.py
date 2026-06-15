@@ -22,6 +22,7 @@ from .providers import Provider, ProviderError, RateLimited
 from .routing import KIND_ROUTES as ROUTES  # re-exported for callers
 from .routing import route
 from .stats import provider_stats
+from .toolsets import ToolCatalog
 
 
 def log(msg: str) -> None:
@@ -57,9 +58,11 @@ class AgentResult:
 class Runner:
     def __init__(self, run_id: str, providers: dict[str, Provider],
                  caps: dict[str, int], journal_dir: str = ".iworkflow",
-                 cooldown_s: float = 0.0, learn: bool = False):
+                 cooldown_s: float = 0.0, learn: bool = False,
+                 catalog: ToolCatalog | None = None):
         self.run_id = run_id
         self.providers = providers
+        self.catalog = catalog
         self.sems = {name: asyncio.Semaphore(caps.get(name, 2)) for name in providers}
         self.caps = caps
         self.cooldown_s = cooldown_s   # >0: skip a provider for this long after it throttles
@@ -94,12 +97,14 @@ class Runner:
     async def agent(self, prompt: str, *, label: str, schema: dict | None = None,
                     role: str | None = None, prefer: list[str] | None = None,
                     sandbox: str = "read-only",
-                    cwd: str | None = None) -> AgentResult:
+                    cwd: str | None = None,
+                    tools: list[str] | None = None) -> AgentResult:
         if label in self._done:
             log(f"RESUMED  {label}  (cached, 0 tokens)")
             return replace(self._done[label], resumed=True)   # always flag cache hits
 
         t_start = time.time()
+        toolset = self.catalog.resolve(tools) if (tools and self.catalog) else None
         if prefer:
             order, why = [p for p in prefer if p in self.providers], "explicit"
         else:
@@ -125,12 +130,8 @@ class Runner:
             async with self.sems[name]:
                 log(f"DISPATCH {label} → {name} (cap {self.caps.get(name)})")
                 try:
-                    value = await prov.run(
-                        prompt,
-                        schema=use_schema,
-                        sandbox=sandbox,
-                        cwd=cwd,
-                    )
+                    value = await prov.run(prompt, schema=use_schema,
+                                           sandbox=sandbox, cwd=cwd, toolset=toolset)
                     attempts.append(Attempt(name, "DONE"))
                     res = AgentResult(label, "DONE", name, value, attempts)
                     self._done[label] = res      # within-process dedup, not just cross-process
