@@ -98,13 +98,21 @@ class Runner:
                     role: str | None = None, prefer: list[str] | None = None,
                     sandbox: str = "read-only",
                     cwd: str | None = None,
-                    tools: list[str] | None = None) -> AgentResult:
+                    tools: list[str] | None = None,
+                    auto_tools: int | None = None) -> AgentResult:
         if label in self._done:
             log(f"RESUMED  {label}  (cached, 0 tokens)")
             return replace(self._done[label], resumed=True)   # always flag cache hits
 
         t_start = time.time()
-        toolset = self.catalog.resolve(tools) if (tools and self.catalog) else None
+        # tool selection: explicit names/tags win; else auto-pick top-k by keyword
+        # relevance to the prompt; else inject nothing (the lean default).
+        if self.catalog and tools:
+            toolset = self.catalog.resolve(tools)
+        elif self.catalog and auto_tools:
+            toolset = self.catalog.search(prompt, auto_tools)
+        else:
+            toolset = None
         if prefer:
             order, why = [p for p in prefer if p in self.providers], "explicit"
         else:

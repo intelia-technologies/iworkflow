@@ -123,6 +123,35 @@ def test_runner_resolves_tools_with_catalog_and_forwards_toolset(tmp_path):
     assert provider.toolset.specs == (postgres, bash)
 
 
+def test_runner_auto_selects_tools_by_keyword_search(tmp_path):
+    catalog = ToolCatalog()
+    db = ToolSpec("postgres", ToolKind.MCP, "Query the database with SQL", tags=("db",))
+    web = ToolSpec("fetch", ToolKind.MCP, "Fetch a web page over http", tags=("web",))
+    catalog.register(db)
+    catalog.register(web)
+    provider = RecordingProvider()
+    runner = Runner(
+        "auto-tools",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+        catalog=catalog,
+    )
+
+    result = asyncio.run(
+        runner.agent(
+            "help me query the database",
+            label="job",
+            prefer=["codex"],
+            auto_tools=1,
+        )
+    )
+
+    assert result.ok
+    # keyword search picked the db tool by relevance, not the web tool
+    assert provider.toolset.specs == (db,)
+
+
 def test_runner_forwards_none_toolset_without_tools_or_catalog(tmp_path):
     catalog = ToolCatalog()
     catalog.register(ToolSpec("Bash", ToolKind.NATIVE, "Run shell", tags=("shell",)))
