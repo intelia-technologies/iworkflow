@@ -17,6 +17,9 @@ uv.lock
 .iworkflow_test/
 *.output
 
+# nosdrop publish cache (written next to a published artifact)
+.nosdrop/
+
 # editors / OS
 .DS_Store
 .idea/
