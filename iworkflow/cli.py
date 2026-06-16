@@ -12,42 +12,132 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import tomllib
 from pathlib import Path
 
 # The command an agent CLI will spawn for the MCP server. `iworkflow-mcp` is the
 # console script installed alongside this package.
 MCP_COMMAND = "iworkflow-mcp"
 
+# iworkflow owns the region between these markers in .codex/config.toml, so a
+# re-run updates in place (idempotent) and `unregister` can remove it cleanly —
+# instead of blindly appending a second [mcp_servers.iworkflow] table.
+CODEX_MARK_BEGIN = "# >>> iworkflow >>>"
+CODEX_MARK_END = "# <<< iworkflow <<<"
+_CODEX_BLOCK = (
+    f"{CODEX_MARK_BEGIN}\n[mcp_servers.iworkflow]\n"
+    f'command = "{MCP_COMMAND}"\n{CODEX_MARK_END}'
+)
+_CODEX_MARKER_RE = re.compile(
+    re.escape(CODEX_MARK_BEGIN) + r".*?" + re.escape(CODEX_MARK_END), re.DOTALL)
+
+
+class RegisterError(Exception):
+    """register/unregister refused to edit a config (would corrupt or can't parse it)."""
+
+
+def _toml_ok(text: str) -> bool:
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return False
+    return True
+
+
+def _strip_codex_block(text: str) -> str:
+    """Remove iworkflow's marked region (if any), leaving the rest tidy."""
+    if CODEX_MARK_BEGIN not in text:
+        return text
+    cleaned = _CODEX_MARKER_RE.sub("", text)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip("\n")
+    return cleaned + "\n" if cleaned else ""
+
+
+def _append_codex_block(base: str) -> str:
+    base = base.rstrip("\n")
+    return f"{base}\n\n{_CODEX_BLOCK}\n" if base else f"{_CODEX_BLOCK}\n"
+
 
 def register_claude(root: str) -> tuple[Path, bool]:
-    """Add the iworkflow MCP server to <root>/.mcp.json (merge, don't clobber)."""
+    """Add the iworkflow MCP server to <root>/.mcp.json (merge, never corrupt)."""
     path = Path(root) / ".mcp.json"
-    data = {}
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            data = {}
-    if not isinstance(data, dict):
+        except json.JSONDecodeError as e:
+            raise RegisterError(f"{path} is not valid JSON; fix it first") from e
+        if not isinstance(data, dict):
+            raise RegisterError(f"{path} is not a JSON object; refusing to edit it")
+    else:
         data = {}
     servers = data.setdefault("mcpServers", {})
-    if "iworkflow" in servers:
-        return path, False
+    if servers.get("iworkflow") == {"command": MCP_COMMAND}:
+        return path, False                              # already current — no write
     servers["iworkflow"] = {"command": MCP_COMMAND}
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path, True
 
 
 def register_codex(root: str) -> tuple[Path, bool]:
-    """Append [mcp_servers.iworkflow] to <root>/.codex/config.toml if absent."""
+    """Register iworkflow in <root>/.codex/config.toml inside owned markers.
+
+    Idempotent (re-run updates in place), self-healing (strips a stale managed
+    block), and validating (never writes TOML that won't parse). If another tool
+    already registered `mcp_servers.iworkflow` outside our markers, we leave it."""
     path = Path(root) / ".codex" / "config.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
-    if "[mcp_servers.iworkflow]" in text:
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    if _CODEX_BLOCK in original and _toml_ok(original):
+        return path, False                              # already present & file healthy
+    stripped = _strip_codex_block(original)             # drop any iworkflow-managed block
+    if stripped.strip() and not _toml_ok(stripped):
+        raise RegisterError(
+            f"{path} has TOML errors outside iworkflow's block; fix it first")
+    parsed = tomllib.loads(stripped) if stripped.strip() else {}
+    if "iworkflow" in parsed.get("mcp_servers", {}):
+        new_text = stripped                             # managed elsewhere — don't add a 2nd
+    else:
+        new_text = _append_codex_block(stripped)
+    if not _toml_ok(new_text):                          # validate BEFORE writing (rollback = don't)
+        raise RegisterError(
+            f"refusing to write {path} — the result would not parse as TOML")
+    if new_text == original:
         return path, False
-    sep = "" if text.endswith("\n") or not text else "\n"
-    block = f'{sep}\n[mcp_servers.iworkflow]\ncommand = "{MCP_COMMAND}"\n'
-    path.write_text(text + block, encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(new_text, encoding="utf-8")
+    return path, True
+
+
+def unregister_claude(root: str) -> tuple[Path, bool]:
+    """Remove iworkflow from <root>/.mcp.json. Returns (path, changed)."""
+    path = Path(root) / ".mcp.json"
+    if not path.exists():
+        return path, False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise RegisterError(f"{path} is not valid JSON; fix it first") from e
+    servers = data.get("mcpServers", {}) if isinstance(data, dict) else {}
+    if "iworkflow" not in servers:
+        return path, False
+    servers.pop("iworkflow")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path, True
+
+
+def unregister_codex(root: str) -> tuple[Path, bool]:
+    """Remove iworkflow's marked block from <root>/.codex/config.toml (leaves a
+    foreign-managed entry alone). Returns (path, changed)."""
+    path = Path(root) / ".codex" / "config.toml"
+    if not path.exists():
+        return path, False
+    original = path.read_text(encoding="utf-8")
+    new_text = _strip_codex_block(original)
+    if new_text == original:
+        return path, False                              # nothing of ours to remove
+    if new_text.strip() and not _toml_ok(new_text):
+        raise RegisterError(f"removing iworkflow from {path} would break it; fix it first")
+    path.write_text(new_text, encoding="utf-8")
     return path, True
 
 
@@ -62,20 +152,37 @@ def ensure_gitignore(root: str, entry: str = ".iworkflow/") -> tuple[Path, bool]
     return path, True
 
 
+def _targets(codex: bool, claude: bool, reg: bool) -> list[tuple[str, object]]:
+    both = not (codex or claude)
+    out: list[tuple[str, object]] = []
+    if codex or both:
+        out.append(("Codex", register_codex if reg else unregister_codex))
+    if claude or both:
+        out.append(("Claude", register_claude if reg else unregister_claude))
+    return out
+
+
 def _cmd_register(root: str, *, codex: bool, claude: bool) -> None:
-    targets = []
-    if codex or not (codex or claude):
-        targets.append(("Codex", register_codex))
-    if claude or not (codex or claude):
-        targets.append(("Claude", register_claude))
-    for name, fn in targets:
-        path, wrote = fn(root)
-        print(f"{'registered' if wrote else 'already present'}: {name} → {path}")
+    for name, fn in _targets(codex, claude, reg=True):
+        try:
+            path, wrote = fn(root)
+            print(f"{'registered' if wrote else 'already present'}: {name} → {path}")
+        except RegisterError as e:
+            print(f"skipped {name}: {e}")
     gi_path, gi_wrote = ensure_gitignore(root)
     print(f"{'added to' if gi_wrote else 'already in'} .gitignore: .iworkflow/  → {gi_path}")
     print('\nDone. Agents in this repo can now call the "iworkflow" MCP tools '
-          "(iworkflow_ping, iworkflow_workflow). Commit the config so every worktree "
-          "inherits it.")
+          "(iworkflow_ping, iworkflow_workflow, iworkflow_list_workflows). Commit the "
+          "config so every worktree inherits it.")
+
+
+def _cmd_unregister(root: str, *, codex: bool, claude: bool) -> None:
+    for name, fn in _targets(codex, claude, reg=False):
+        try:
+            path, changed = fn(root)
+            print(f"{'removed' if changed else 'not present'}: {name} → {path}")
+        except RegisterError as e:
+            print(f"skipped {name}: {e}")
 
 
 def _cmd_stats(journal_dir: str, run_id: str | None) -> None:
@@ -87,6 +194,28 @@ def _cmd_stats(journal_dir: str, run_id: str | None) -> None:
         print(json.dumps(summary, indent=2))
     print("\nper-provider (all runs):")
     print(json.dumps(provider_stats(journal_dir), indent=2))
+
+
+def _cmd_workflows(recipe_dir: str | None) -> None:
+    from .recipes import list_recipes
+
+    for r in list_recipes(recipe_dir):
+        params = ", ".join(r["params"]) or "—"
+        print(f"  {r['name']:16} {r['description']}")
+        print(f"  {'':16} params: {params}")
+
+
+def _cmd_run(name: str | None, params_json: str | None, spec_path: str | None,
+             run_id: str, recipe_dir: str | None) -> None:
+    import asyncio
+
+    from .mcp_server import run_workflow
+
+    params = json.loads(params_json) if params_json else None
+    spec = json.loads(Path(spec_path).read_text(encoding="utf-8")) if spec_path else None
+    result = asyncio.run(run_workflow(workflow=name, params=params, spec=spec,
+                                      run_id=run_id, recipe_dir=recipe_dir))
+    print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
 
 def _cmd_catalog(root: str) -> None:
@@ -117,8 +246,24 @@ def main(argv: list[str] | None = None) -> None:
     p_reg.add_argument("--codex", action="store_true", help="only register for Codex")
     p_reg.add_argument("--claude", action="store_true", help="only register for Claude")
 
+    p_unreg = sub.add_parser("unregister", help="remove the iworkflow MCP server from a repo")
+    p_unreg.add_argument("--root", default=".")
+    p_unreg.add_argument("--codex", action="store_true", help="only unregister for Codex")
+    p_unreg.add_argument("--claude", action="store_true", help="only unregister for Claude")
+
     p_cat = sub.add_parser("catalog", help="show the tool catalog discovered in a repo")
     p_cat.add_argument("--root", default=".")
+
+    p_wf = sub.add_parser("workflows", help="list predefined workflow recipes")
+    p_wf.add_argument("--recipe-dir", default=None,
+                      help="extra dir of host *.json recipes (default .iworkflow/recipes)")
+
+    p_run = sub.add_parser("run", help="run a recipe by name or a --spec file")
+    p_run.add_argument("name", nargs="?", default=None, help="recipe name (omit if --spec)")
+    p_run.add_argument("--params", default=None, help="JSON params object")
+    p_run.add_argument("--spec", default=None, help="path to a declarative workflow spec JSON")
+    p_run.add_argument("--run-id", default="cli")
+    p_run.add_argument("--recipe-dir", default=None)
 
     p_stats = sub.add_parser("stats", help="show telemetry from past runs (the logs)")
     p_stats.add_argument("--journal-dir", default=".iworkflow")
@@ -130,8 +275,14 @@ def main(argv: list[str] | None = None) -> None:
         serve()
     elif args.cmd == "register":
         _cmd_register(args.root, codex=args.codex, claude=args.claude)
+    elif args.cmd == "unregister":
+        _cmd_unregister(args.root, codex=args.codex, claude=args.claude)
     elif args.cmd == "catalog":
         _cmd_catalog(args.root)
+    elif args.cmd == "workflows":
+        _cmd_workflows(args.recipe_dir)
+    elif args.cmd == "run":
+        _cmd_run(args.name, args.params, args.spec, args.run_id, args.recipe_dir)
     elif args.cmd == "stats":
         _cmd_stats(args.journal_dir, args.run_id)
 
