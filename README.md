@@ -145,6 +145,21 @@ new provider calls. It's the `gate`/critic-loop idea taken one rung up — from
 *stop/continue* to *reshape the plan* — and the safe, data-not-code answer to the
 "orchestrator that programs the next sub-plan" pattern.
 
+An optional `when` guard makes the coordinator **fire only on a deviation** — a
+declarative predicate over the same state, so the on-track path spends zero
+coordinator tokens. Leaves are `{"path": "<dotted>", <op>: operand}` (ops: `eq`,
+`ne`, `in`, `nin`, `gte`, `lte`, `gt`, `lt`, `contains`, `truthy`, `exists`) with an
+optional `select` sub-path applied to each element when the path is a list (so *"any
+review's verdict is ISSUES"* is one predicate); leaves combine with `all` / `any` /
+`not`. `adaptive_review` uses it to skip the audit entirely unless a review flags
+something:
+
+```jsonc
+"when": {"any": [
+  {"path": "steps.fan.value", "select": "value.verdict", "in": ["ISSUES"]},
+  {"path": "steps.fan.value", "select": "value.severity", "eq": "high"}]}
+```
+
 **Safety policy.** Because a spec can arrive from an untrusted agent over MCP, every
 run is bounded by a `Limits` policy (conservative by default): only a `read-only`
 sandbox is allowed (a spec can't request `codex exec --sandbox danger-…`), tool

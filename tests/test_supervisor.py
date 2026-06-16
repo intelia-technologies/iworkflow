@@ -247,3 +247,147 @@ def test_adaptive_review_injects_audit_on_issues(tmp_path):
                         {"topic": "feature", "subject_a": "A", "subject_b": "B"}))
     assert out["status"] == "DONE"
     assert out["output"]["audit"] == "audit-done"     # supervisor injected + ran the audit
+
+
+# --- phase 2: the `when` deviation guard ----------------------------------
+def test_supervisor_when_false_skips_coordinator(tmp_path):
+    calls = {"sup": 0}
+
+    def responder(prompt, schema, i):
+        props = (schema or {}).get("properties", {})
+        if "action" in props:
+            calls["sup"] += 1
+            return {"action": "adjust", "skip": ["after"]}
+        if "verdict" in props:
+            return {"verdict": "PASS"}
+        return "after-ran"
+
+    runner, _ = _scripted_runner(tmp_path, responder)
+    spec = {"steps": [
+        {"id": "rev", "kind": "agent", "prefer": ["codex"],
+         "schema": {"type": "object", "properties": {"verdict": {"type": "string"}}},
+         "prompt": "review"},
+        {"id": "sup", "kind": "supervisor", "needs": ["rev"], "prefer": ["codex"],
+         "when": {"any": [{"path": "steps.rev.value.verdict", "eq": "ISSUES"}]},
+         "prompt": "decide"},
+        {"id": "after", "kind": "agent", "needs": ["sup"], "prefer": ["codex"], "prompt": "go"}]}
+    out = _run(run_spec(runner, spec))
+    assert out["status"] == "DONE"
+    assert calls["sup"] == 0                           # guard false → coordinator never fired
+    assert out["steps"]["sup"]["skipped_guard"] is True
+    assert out["steps"]["after"] == "after-ran"        # plan untouched, downstream ran
+
+
+def test_supervisor_when_true_fires(tmp_path):
+    calls = {"sup": 0}
+
+    def responder(prompt, schema, i):
+        props = (schema or {}).get("properties", {})
+        if "action" in props:
+            calls["sup"] += 1
+            return {"action": "adjust", "skip": ["after"]}
+        if "verdict" in props:
+            return {"verdict": "ISSUES"}
+        return "after-ran"
+
+    runner, _ = _scripted_runner(tmp_path, responder)
+    spec = {"steps": [
+        {"id": "rev", "kind": "agent", "prefer": ["codex"],
+         "schema": {"type": "object", "properties": {"verdict": {"type": "string"}}},
+         "prompt": "review"},
+        {"id": "sup", "kind": "supervisor", "needs": ["rev"], "prefer": ["codex"],
+         "when": {"any": [{"path": "steps.rev.value.verdict", "eq": "ISSUES"}]},
+         "prompt": "decide"},
+        {"id": "after", "kind": "agent", "needs": ["sup"], "prefer": ["codex"], "prompt": "go"}]}
+    out = _run(run_spec(runner, spec))
+    assert out["status"] == "DONE"
+    assert calls["sup"] == 1                           # guard true → coordinator fired
+    assert "after" not in out["steps"]                 # and it skipped the future step
+
+
+def test_when_select_over_list_and_numeric_threshold(tmp_path):
+    fired = {"n": 0}
+
+    def responder(prompt, schema, i):
+        props = (schema or {}).get("properties", {})
+        if "action" in props:
+            fired["n"] += 1
+            return {"action": "continue"}
+        return {"findings": [{"severity": 7}, {"severity": 2}]}
+
+    runner, _ = _scripted_runner(tmp_path, responder)
+    spec = {"steps": [
+        {"id": "scan", "kind": "agent", "prefer": ["codex"],
+         "schema": {"type": "object", "properties": {"findings": {"type": "array"}}},
+         "prompt": "scan"},
+        {"id": "sup", "kind": "supervisor", "needs": ["scan"], "prefer": ["codex"],
+         # select drills into each list element; a leaf over a list fires on ANY match
+         "when": {"any": [{"path": "steps.scan.value.findings", "select": "severity",
+                           "gte": 5}]},
+         "prompt": "decide"}]}
+    out = _run(run_spec(runner, spec))
+    assert out["status"] == "DONE"
+    assert fired["n"] == 1                              # severity 7 >= 5 → fired
+
+
+def test_when_not_combinator(tmp_path):
+    fired = {"n": 0}
+
+    def responder(prompt, schema, i):
+        props = (schema or {}).get("properties", {})
+        if "action" in props:
+            fired["n"] += 1
+            return {"action": "continue"}
+        return {"verdict": "PASS"}
+
+    runner, _ = _scripted_runner(tmp_path, responder)
+    spec = {"steps": [
+        {"id": "g", "kind": "agent", "prefer": ["codex"],
+         "schema": {"type": "object", "properties": {"verdict": {"type": "string"}}},
+         "prompt": "g"},
+        {"id": "sup", "kind": "supervisor", "needs": ["g"], "prefer": ["codex"],
+         "when": {"not": {"path": "steps.g.value.verdict", "eq": "PASS"}},
+         "prompt": "decide"}]}
+    out = _run(run_spec(runner, spec))
+    assert out["status"] == "DONE"
+    assert fired["n"] == 0                              # verdict==PASS → not(eq PASS)=false → skip
+
+
+def test_bad_when_rejected_at_parse():
+    bad = [
+        {"steps": [{"id": "s", "kind": "supervisor", "prompt": "p",
+                    "when": {"path": "x"}}]},                       # no operator
+        {"steps": [{"id": "s", "kind": "supervisor", "prompt": "p",
+                    "when": {"path": "x", "eq": 1, "ne": 2}}]},     # two operators
+        {"steps": [{"id": "s", "kind": "supervisor", "prompt": "p",
+                    "when": {"any": []}}]},                         # empty any
+        {"steps": [{"id": "s", "kind": "supervisor", "prompt": "p",
+                    "when": {"foo": 1}}]},                          # no path/combinator
+    ]
+    for spec in bad:
+        with pytest.raises(WorkflowError):
+            WorkflowSpec.parse(spec)
+
+
+def test_adaptive_review_skips_supervisor_when_clean(tmp_path):
+    sup_calls = {"n": 0}
+
+    def responder(prompt, schema, i):
+        props = (schema or {}).get("properties", {})
+        if "action" in props:                          # the supervisor (should never fire)
+            sup_calls["n"] += 1
+            return {"action": "adjust", "inject": [
+                {"id": "audit", "kind": "agent", "prefer": ["codex"], "prompt": "audit"}]}
+        if set(props.get("verdict", {}).get("enum", [])) == {"DONE", "BLOCKED"}:
+            return {"verdict": "DONE", "summary": "ok"}            # gate
+        if "findings" in props:
+            return {"verdict": "PASS", "severity": "low", "findings": []}   # clean reviews
+        return "audit-done"
+
+    runner, _ = _scripted_runner(tmp_path, responder)
+    out = _run(run_spec(runner, get_recipe("adaptive_review"),
+                        {"topic": "feature", "subject_a": "A", "subject_b": "B"}))
+    assert out["status"] == "DONE"
+    assert sup_calls["n"] == 0                          # clean path → coordinator never fired
+    assert out["output"]["audit"] is None              # no audit injected
+    assert out["output"]["supervision"]["skipped_guard"] is True

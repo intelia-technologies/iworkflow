@@ -160,6 +160,11 @@ ADAPTIVE_REVIEW: dict[str, Any] = {
         ]},
         {"id": "supervise", "kind": "supervisor", "needs": ["fan"],
          "prefer": ["claude", "codex"], "watch": ["fan"],
+         # only fire the coordinator when a review actually flags something — the
+         # clean path (both PASS, low severity) spends zero coordinator tokens.
+         "when": {"any": [
+             {"path": "steps.fan.value", "select": "value.verdict", "in": ["ISSUES"]},
+             {"path": "steps.fan.value", "select": "value.severity", "eq": "high"}]},
          "prompt": "You coordinate a code review. The two reviews returned:\n"
                    "{{supervisor.steps}}\n\nSubjects under review:\nA: {{params.subject_a}}\n"
                    "B: {{params.subject_b}}\n\nIf EITHER review verdict is ISSUES (or severity "

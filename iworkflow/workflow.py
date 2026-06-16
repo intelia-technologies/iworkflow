@@ -145,6 +145,99 @@ def _truthy(value: Any) -> bool:
 
 
 # --------------------------------------------------------------------------
+# `when` predicates — a declarative deviation guard (data, not code)
+# --------------------------------------------------------------------------
+# A leaf is {"path": "<dotted>", <op>: operand} with an optional "select" sub-path
+# applied to each element when the path resolves to a list (so "any review's
+# verdict is ISSUES" is one predicate). Leaves combine with {"all"|"any"|"not": …}.
+# This evaluates the same accumulated ctx the prompt sees — no code, so it's safe
+# to accept from an untrusted spec over MCP.
+_LEAF_OPS = {"eq", "ne", "in", "nin", "gte", "lte", "gt", "lt", "contains",
+             "truthy", "exists"}
+
+
+def _validate_when(cond: Any, *, depth: int = 0) -> None:
+    if depth > 8:
+        raise WorkflowError("when nests too deep")
+    if not isinstance(cond, dict):
+        raise WorkflowError("when must be an object")
+    if "all" in cond or "any" in cond:
+        key = "all" if "all" in cond else "any"
+        if not isinstance(cond[key], list) or not cond[key]:
+            raise WorkflowError(f"when.{key} must be a non-empty list")
+        for sub in cond[key]:
+            _validate_when(sub, depth=depth + 1)
+        return
+    if "not" in cond:
+        _validate_when(cond["not"], depth=depth + 1)
+        return
+    if "path" not in cond:
+        raise WorkflowError("when leaf needs a 'path' (or all/any/not)")
+    ops = [k for k in cond if k in _LEAF_OPS]
+    if len(ops) != 1:
+        raise WorkflowError(
+            f"when leaf needs exactly one operator of {sorted(_LEAF_OPS)}, got {ops}")
+
+
+def _as_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _eval_leaf_op(cond: dict[str, Any], value: Any) -> bool:
+    if "eq" in cond:
+        return value == cond["eq"]
+    if "ne" in cond:
+        return value != cond["ne"]
+    if "in" in cond:
+        return isinstance(cond["in"], list) and value in cond["in"]
+    if "nin" in cond:
+        return isinstance(cond["nin"], list) and value not in cond["nin"]
+    if "contains" in cond:
+        if isinstance(value, (str, list, tuple, dict)):
+            return cond["contains"] in value
+        return False
+    if "truthy" in cond:
+        return _truthy(value) is bool(cond["truthy"])
+    if "exists" in cond:
+        return (value is not None) is bool(cond["exists"])
+    a, b = _as_number(value), _as_number(cond.get("gte", cond.get("lte",
+           cond.get("gt", cond.get("lt")))))
+    if a is None or b is None:
+        return False
+    if "gte" in cond:
+        return a >= b
+    if "lte" in cond:
+        return a <= b
+    if "gt" in cond:
+        return a > b
+    return a < b                                  # "lt"
+
+
+def _eval_when(cond: Any, ctx: dict[str, Any]) -> bool:
+    """Evaluate a `when` predicate against the accumulated ctx. None → True
+    (no guard)."""
+    if cond is None:
+        return True
+    if "all" in cond:
+        return all(_eval_when(c, ctx) for c in cond["all"])
+    if "any" in cond:
+        return any(_eval_when(c, ctx) for c in cond["any"])
+    if "not" in cond:
+        return not _eval_when(cond["not"], ctx)
+    root = _lookup(cond["path"], ctx)
+    select = cond.get("select")
+    elements = root if isinstance(root, list) else [root]
+    # a leaf over a list is satisfied when ANY element satisfies it
+    return any(_eval_leaf_op(cond, _lookup(select, el) if select else el)
+               for el in elements)
+
+
+# --------------------------------------------------------------------------
 # parsed spec
 # --------------------------------------------------------------------------
 @dataclass
@@ -180,6 +273,7 @@ class Step:
     collect: dict[str, Any] | None = None      # kind == loop
     supervisor: AgentSpec | None = None        # kind == supervisor (the coordinator agent)
     watch: list[str] | None = None             # kind == supervisor (steps to expose; None=all)
+    when: dict[str, Any] | None = None         # kind == supervisor (deviation guard; None=always)
 
 
 @dataclass
@@ -354,6 +448,12 @@ def _parse_step(d: dict[str, Any], seen: set[str], *, top: bool,
         # its schema to the built-in `supervision` decision shape.
         step.supervisor = _parse_agent({"schema": "supervision", **d}, sid, limits)
         step.watch = watch
+        # optional deviation guard: the coordinator only fires when `when` is true,
+        # so the common path spends zero coordinator tokens. Validate it now.
+        when = d.get("when")
+        if when is not None:
+            _validate_when(when)
+        step.when = when
     return step
 
 
@@ -553,6 +653,13 @@ class _Executor:
         a = step.supervisor
         assert a is not None
         sctx = {**self.ctx, "supervisor": self._supervisor_state(step)}
+        # deviation guard: if `when` is false, the coordinator never fires — no agent
+        # call, no plan mutation. The common (on-track) path is free.
+        if step.when is not None and not _eval_when(step.when, sctx):
+            log(f"SUPERVISOR {step.id}: when=false → skipped (0 agents)")
+            return {"kind": "supervisor", "ok": True,
+                    "value": {"action": "continue", "skipped_guard": True},
+                    "applied": {"skipped": [], "injected": [], "params": [], "errors": []}}
         res = await self._agent_call(a, sctx, step.id)
         # a failed/garbage decision degrades to "continue" — never silently mutate.
         decision = res.value if (res.ok and isinstance(res.value, dict)) else {"action": "continue"}

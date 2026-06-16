@@ -42,10 +42,33 @@ State is exposed to the coordinator's prompt as:
 - `{{supervisor.remaining}}` — ids still ahead in the plan,
 - `{{supervisor.params}}` — current params.
 
-The "fire only on deviation/relevant findings" intent lives in the **coordinator's
-prompt** (it inspects `{{supervisor.steps}}` and decides) — v1 needs no separate
-deviation-detection mechanism. (A conditional `when` guard per step is a possible
-phase-2 sugar.)
+## The `when` deviation guard
+
+By default the coordinator always fires and its prompt decides. An optional `when`
+predicate gates whether it fires at all — so the **on-track path spends zero
+coordinator tokens**, and the agent runs only when state actually deviates:
+
+```jsonc
+"when": { "any": [
+  { "path": "steps.fan.value", "select": "value.verdict", "in": ["ISSUES"] },
+  { "path": "steps.scan.value.findings", "select": "severity", "gte": 8 }
+] }
+```
+
+It's a small declarative predicate language — **data, not code**, evaluated against
+the same accumulated ctx the prompt sees (safe to accept over MCP):
+
+- **Leaf**: `{"path": "<dotted>", <op>: operand}` where `op` ∈ `eq` `ne` `in` `nin`
+  `gte` `lte` `gt` `lt` `contains` `truthy` `exists`. An optional `select` sub-path
+  is applied to each element when `path` resolves to a list; a leaf over a list is
+  satisfied when **any** element matches (so "any review is ISSUES" is one leaf).
+- **Combinators**: `{"all": [...]}`, `{"any": [...]}`, `{"not": pred}`.
+
+Validated at parse time (exactly one operator per leaf, non-empty combinators), so a
+malformed guard fails fast. When the guard is false the supervisor returns a no-op
+`continue` decision (recorded with `skipped_guard: true`) — journaled, so a resume
+replays the same no-op. This is the deterministic, cheap form of "fire on deviation";
+the coordinator's *prompt* still makes the nuanced call once it does fire.
 
 ## Invariants (why this stays safe + deterministic)
 
