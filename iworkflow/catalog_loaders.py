@@ -39,9 +39,16 @@ def load_project_catalog(root: str = ".") -> ToolCatalog:
         if spec is not None:
             register_once(spec)
 
+    codex_skills_dir = project / ".codex" / "skills"
+    for path in _skill_paths(codex_skills_dir):
+        spec = _load_skill(path)
+        if spec is not None:
+            register_once(spec)
+
     commands_dir = project / ".claude" / "commands"
-    for path in sorted(commands_dir.glob("*.md")) if commands_dir.is_dir() else ():
-        spec = _load_command(path)
+    for path in _command_paths(commands_dir):
+        name = _command_name(commands_dir, path)
+        spec = _load_command(path, name)
         if spec is not None:
             register_once(spec)
 
@@ -90,6 +97,19 @@ def _skill_paths(skills_dir: Path) -> list[Path]:
     return sorted(skills_dir.glob("*/SKILL.md")) + sorted(skills_dir.glob("*.md"))
 
 
+def _command_paths(commands_dir: Path) -> list[Path]:
+    if not commands_dir.is_dir():
+        return []
+    return sorted(
+        path for path in commands_dir.rglob("*.md") if path.name.lower() != "readme.md"
+    )
+
+
+def _command_name(commands_dir: Path, path: Path) -> str:
+    relative = path.relative_to(commands_dir).with_suffix("")
+    return ":".join(relative.parts)
+
+
 def _load_skill(path: Path) -> ToolSpec | None:
     text = _read_text(path)
     if text is None:
@@ -106,14 +126,22 @@ def _load_skill(path: Path) -> ToolSpec | None:
     return ToolSpec(name, ToolKind.SKILL, description, inject_prompt=body)
 
 
-def _load_command(path: Path) -> ToolSpec | None:
+def _load_command(path: Path, name: str) -> ToolSpec | None:
     text = _read_text(path)
     if text is None:
         return None
+
+    parsed = _split_frontmatter(text)
+    if parsed is not None:
+        metadata, body = parsed
+        description = metadata.get("description") or _first_nonempty_line(body)
+    else:
+        description = _first_nonempty_line(text)
+
     return ToolSpec(
-        path.stem,
+        name,
         ToolKind.COMMAND,
-        _first_nonempty_line(text),
+        description,
         inject_prompt=text,
     )
 

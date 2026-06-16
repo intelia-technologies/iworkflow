@@ -78,3 +78,40 @@ url = "https://example.invalid/mcp"
     assert specs["fix"].kind == ToolKind.COMMAND
     assert specs["fix"].description == "Fix things"
     assert specs["fix"].inject_prompt == command_text
+
+
+def test_load_project_catalog_reads_namespaced_commands_and_codex_skills(tmp_path):
+    commands_dir = tmp_path / ".claude" / "commands" / "workflows"
+    commands_dir.mkdir(parents=True)
+    command_text = (
+        "---\n"
+        "description: Plan an iworkflow change\n"
+        "argument-hint: [topic]\n"
+        "---\n"
+        "\n"
+        "# Plan\n"
+        "\n"
+        "Create the implementation plan.\n"
+    )
+    (commands_dir / "plan.md").write_text(command_text)
+
+    codex_skill_dir = tmp_path / ".codex" / "skills" / "workflows-plan"
+    codex_skill_dir.mkdir(parents=True)
+    skill_body = "Follow the local workflows plan command.\n"
+    (codex_skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: workflows-plan\n"
+        "description: Use when planning iworkflow work in Codex\n"
+        "---\n"
+        + skill_body
+    )
+
+    catalog = load_project_catalog(str(tmp_path))
+
+    specs = {spec.name: spec for spec in catalog.all()}
+    assert specs["workflows:plan"].kind == ToolKind.COMMAND
+    assert specs["workflows:plan"].description == "Plan an iworkflow change"
+    assert specs["workflows:plan"].inject_prompt == command_text
+    assert specs["workflows-plan"].kind == ToolKind.SKILL
+    assert specs["workflows-plan"].description == "Use when planning iworkflow work in Codex"
+    assert specs["workflows-plan"].inject_prompt == skill_body
