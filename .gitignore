@@ -7,6 +7,10 @@ build/
 dist/
 .venv/
 venv/
+# zero-dep core: the lockfile is a `uv run` side-effect, not committed
+uv.lock
+.pytest_cache/
+.ruff_cache/
 
 # iworkflow run journals / scratch
 .iworkflow/

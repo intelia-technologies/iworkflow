@@ -17,7 +17,9 @@ from __future__ import annotations
 from typing import Any
 
 from .providers import ClaudeInteractiveProvider, CodexProvider, GeminiProvider
+from .recipes import get_recipe, list_recipes
 from .scheduler import Runner
+from .workflow import run_spec
 
 
 def ping() -> dict[str, str]:
@@ -33,29 +35,27 @@ def _default_runner(run_id: str) -> Runner:
     }, caps={"codex": 2, "gemini": 2, "claude": 1})
 
 
-async def run_workflow(goal: str, run_id: str = "mcp",
+async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
+                       params: dict[str, Any] | None = None,
+                       spec: dict[str, Any] | None = None,
+                       run_id: str = "mcp", recipe_dir: str | None = None,
                        runner: Runner | None = None) -> dict[str, Any]:
-    """Drive a subscription-only fan→synthesize workflow over `goal`.
+    """Run a subscription-only multi-agent workflow. Three ways to drive it:
 
-    Two proposers (different strengths) + one synthesizer. `runner` is injectable
-    so tests can pass a FakeProvider-backed Runner (no quota)."""
+    - `spec=`     : a declarative workflow spec (define your own — DYNAMIC door).
+    - `workflow=` : a named recipe (built-in or host-registered) + `params`.
+    - `goal=`     : sugar for the `fan_synthesize` recipe over a single question.
+
+    `runner` is injectable so tests pass a FakeProvider-backed Runner (no quota).
+    """
     r = runner or _default_runner(run_id)
-    fan = await r.parallel([
-        lambda: r.agent(f"From an engineering angle, answer concisely: {goal}",
-                        label="propose:eng", prefer=["codex", "gemini"]),
-        lambda: r.agent(f"From a product/UX angle, answer concisely: {goal}",
-                        label="propose:dx", prefer=["gemini", "codex"]),
-    ])
-    proposals = [p.value for p in fan if p and p.ok]
-    synth = await r.agent(
-        f"Synthesize ONE decisive answer to: {goal}\nInputs: {proposals}",
-        label="synth", prefer=["codex", "claude"])
-    return {
-        "goal": goal,
-        "answer": synth.value if synth.ok else None,
-        "proposals": proposals,
-        "providers": [p.provider for p in fan] + [synth.provider],
-    }
+    if spec is not None:
+        return await run_spec(r, spec, params)
+    if workflow is not None:
+        return await run_spec(r, get_recipe(workflow, recipe_dir), params)
+    if goal is not None:
+        return await run_spec(r, get_recipe("fan_synthesize"), {"goal": goal})
+    raise ValueError("provide one of: spec, workflow, or goal")
 
 
 def main() -> None:
@@ -69,10 +69,22 @@ def main() -> None:
         return ping()
 
     @server.tool()
-    async def iworkflow_workflow(goal: str, run_id: str = "mcp") -> dict[str, Any]:
-        """Run a subscription-only multi-agent iworkflow over `goal` (fan→synthesize)
-        across your Codex/Gemini/Claude CLIs and return the synthesized answer."""
-        return await run_workflow(goal, run_id=run_id)
+    def iworkflow_list_workflows() -> list[dict[str, Any]]:
+        """List the predefined workflow recipes (built-in + host-registered) with
+        their parameters, so you can pick one by name for `iworkflow_workflow`."""
+        return list_recipes()
+
+    @server.tool()
+    async def iworkflow_workflow(goal: str | None = None, workflow: str | None = None,
+                                 params: dict[str, Any] | None = None,
+                                 spec: dict[str, Any] | None = None,
+                                 run_id: str = "mcp") -> dict[str, Any]:
+        """Run a subscription-only multi-agent workflow across your Codex/Gemini/Claude
+        CLIs. Pass `spec` to DEFINE your own dynamic workflow (steps: agent/parallel/
+        pipeline/loop), or `workflow`+`params` to run a predefined recipe (see
+        iworkflow_list_workflows), or just `goal` for a quick fan→synthesize."""
+        return await run_workflow(goal, workflow=workflow, params=params, spec=spec,
+                                  run_id=run_id)
 
     server.run()
 

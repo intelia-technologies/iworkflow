@@ -77,6 +77,68 @@ Proven so far (47 tests: `.venv/bin/python -m pytest -q`; `python3 examples/demo
 Roadmap: tool-RAG (embedding tool-retrieval at catalog scale) · always-on core
 toolset + missing-tool retry · tmux backend hardening for long prose · progress TUI.
 
+## Workflows: recipes + dynamic specs
+
+The engine runs *workflows*, not just a single hard-coded shape. Two doors, same
+interpreter — mirroring the harness's own `Workflow({name})` vs `Workflow({script})`:
+
+**Predefined recipes** — pick one by name (built-in or host-registered):
+
+```bash
+iworkflow workflows                                   # list recipes + params
+iworkflow run review --params '{"topic":"the scheduler","subject_a":"...","subject_b":"..."}'
+```
+
+Built-ins: `fan_synthesize`, `review` (gate→fan→audit), `roadmap`, `deep_review`
+(an agent-decided loop). A host project drops its own `*.json` specs into
+`.iworkflow/recipes/` and they appear alongside the built-ins — iworkflow stays
+domain-agnostic.
+
+**Dynamic specs** — *define your own* workflow as **data** (safe to pass across MCP,
+where a Python closure can't go). A spec is a list of `steps`, each one of:
+
+| kind | runs |
+|---|---|
+| `agent` | one worker call (optional `schema`, `prefer`, `gate` to abort) |
+| `parallel` | a fan-out barrier of agents |
+| `pipeline` | per-item staged flow (no barrier between stages) |
+| `loop` | repeat a `body` until a stop condition — see below |
+
+Prompts template against `{{params.*}}`, `{{steps.<id>.value.*}}`, and inside a
+loop `{{loop.collected}}` / `{{loop.iteration}}` / `{{loop.decision.*}}`.
+
+**Loops** carry a mandatory `max_iterations` cap (anti-runaway) plus one `until`:
+
+| `until` | stops when |
+|---|---|
+| `{"times": N}` | N iterations have run |
+| `{"count": {"target": N}}` | the accumulator reaches N items |
+| `{"dry": {"rounds": K}}` | K consecutive rounds add nothing new |
+| `{"budget": {"output_tokens": N}}` | N output tokens spent in the loop |
+| `{"agent": {...}}` | a **critic agent** returns `STOP` (its `missing` feeds the next round) |
+| `{"vote": {...}}` | a **majority of N judge agents** votes `STOP` (optional perspective `lenses`) |
+
+The agent-decided loop is the "completeness critic": the loop runs until a judge
+is satisfied, not until a counter trips — the critic *is* the condition, always
+under the hard cap. `examples/workflow_dynamic.py` runs a gate→agent-decided-loop
+spec deterministically (no quota). An agent drives the same thing over MCP:
+`iworkflow_workflow(spec={...})`. A spec that proves itself can be saved as a named
+recipe — the dynamic → confirmed → preset calcification.
+
+**Safety policy.** Because a spec can arrive from an untrusted agent over MCP, every
+run is bounded by a `Limits` policy (conservative by default): only a `read-only`
+sandbox is allowed (a spec can't request `codex exec --sandbox danger-…`), tool
+injection is off, and the run is capped on total agent calls, parallel width,
+pipeline items, loop nesting depth, and per-loop iterations — so no spec, however
+malformed or hostile, can fan out into a fork-bomb of paid CLI spawns. Trusted
+callers (CLI/SDK) widen the policy explicitly via `run_spec(..., limits=Limits(...))`.
+
+**Durable resume.** Every completed top-level step (a whole loop included) is journaled
+under `.iworkflow/runs/<run_id>/`, so re-running with the same `run_id` short-circuits
+finished steps to their stored result — a workflow throttled at 80% picks up where it
+stopped instead of re-spending. An in-flight loop resumes mid-flight from its body's
+agent-label cache in the scheduler ledger.
+
 ## Design notes
 
 - **Deterministic, not model-driven.** Control flow is real code; the model
