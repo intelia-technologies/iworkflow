@@ -29,10 +29,30 @@ loops, result-threading, adversarial verification, broad sweeps, migrations.
 A dynamic spec that proves useful can be saved as a named recipe (`.iworkflow/recipes/*.json`)
 — the *dynamic → confirmed → preset* calcification.
 
-## How to invoke
+## How to invoke — three doors, same engine
 
-### A) Over MCP (an agent driving iworkflow) — preferred
-Three tools are exposed once iworkflow is registered in the repo:
+> **It is NOT "humans use the CLI, agents use MCP".** The CLI, the MCP tool, and the
+> Python SDK all call the *same* `run_workflow` — the choice is **how you reach the
+> engine**, not what it can do. **An agent can drive iworkflow over either the CLI**
+> (shell out with Bash) **or MCP** (a registered tool). The worker behaviour is
+> identical regardless of the door.
+
+### A) CLI — a person, CI/automation, or an agent via Bash
+The widest surface (full toolbelt: `run`, `workflows`, `stats`, `catalog`, `register`).
+```bash
+iworkflow workflows                       # list recipes + their params
+iworkflow run review --params '{"topic":"the scheduler","subject_a":"…","subject_b":"…"}'
+iworkflow run --spec my_spec.json --params '{"q":"…"}' --run-id job1
+iworkflow stats --run-id job1             # telemetry from past runs
+iworkflow catalog                         # tools/skills discovered in the repo
+iworkflow register [--codex|--claude]     # wire the MCP server into this repo
+```
+An agent reaches this by running the commands through its shell/Bash tool; it must
+**capture and parse stdout** (the bundle JSON; logs go to stderr).
+
+### B) MCP — an agent as a registered tool
+The narrowest, smoothest surface for an agent that should compose iworkflow into its
+own reasoning. `iworkflow register` once, then three tools appear:
 
 - `iworkflow_ping()` — liveness.
 - `iworkflow_list_workflows()` — the recipes (name, description, params).
@@ -42,17 +62,30 @@ Three tools are exposed once iworkflow is registered in the repo:
   - `workflow="<name>"` + `params={...}` — a predefined recipe.
   - `goal="<question>"` — sugar for `fan_synthesize` over one question.
 
-### B) From the CLI (a human, or an agent via Bash)
-```bash
-iworkflow workflows                       # list recipes + their params
-iworkflow run review --params '{"topic":"the scheduler","subject_a":"…","subject_b":"…"}'
-iworkflow run --spec my_spec.json --params '{"q":"…"}' --run-id job1
-iworkflow stats --run-id job1             # telemetry from past runs
-iworkflow catalog                         # tools/skills discovered in the repo
-iworkflow register [--codex|--claude]     # wire the MCP server into this repo
-```
+The result returns as a **structured tool result** (no stdout parsing), and the tool
+is **discoverable** in the agent's tool list. MCP intentionally omits `stats`/`catalog`
+and can't widen `Limits` — a thinner, safer surface than the CLI.
 
-The result is a **bundle**:
+### C) SDK — embedding, tests, custom providers, widening Limits
+```python
+from iworkflow import Runner, run_spec, Limits, FakeProvider
+# inject your own Runner (e.g. FakeProvider for 0-quota tests), or widen the policy:
+await run_spec(runner, spec, params, limits=Limits(allow_tools=True))
+```
+The **only** door that can widen `Limits` (privileged sandbox, tool injection) or swap
+providers. This is what the test suite and `examples/` use.
+
+### Which door (for an agent)
+- **MCP** when it's registered → structured I/O, discoverable, no shell-escaping of big
+  specs. The default for "this agent orchestrates iworkflow inline".
+- **CLI (Bash)** when you need what MCP doesn't expose (`stats`, `catalog`, explicit
+  `--run-id` control), **or there's no MCP host** (CI, a cron-agent, a script). The
+  universal fallback: if there's a shell, it works.
+- **SDK** when embedding iworkflow in code, writing tests, or you must raise `Limits`.
+- They compose: an agent can launch over MCP and later inspect the same run with
+  `iworkflow stats` over Bash — the journal is shared.
+
+The result of a run is a **bundle**:
 ```jsonc
 { "status": "DONE" | "ABORTED",
   "name": "<recipe or null>",

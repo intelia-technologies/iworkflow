@@ -277,10 +277,14 @@
 
 <section id="run" class="wrap">
   <div class="eyebrow">How to run</div>
-  <h2>Two front doors: a CLI, and an MCP tool for agents</h2>
+  <h2>Three front doors — same engine, for humans <i>and</i> agents</h2>
+  <p class="lede">It’s not “humans use the CLI, agents use MCP”. The CLI, the MCP tool,
+  and the Python SDK all call the same engine — the choice is <b>how you reach it</b>,
+  not what it can do. An agent can drive iworkflow over <b>either</b> the CLI (shell out
+  via Bash) <b>or</b> MCP (a registered tool).</p>
 
   <div class="grid g2">
-    <div class="card"><h3>① From the CLI</h3>
+    <div class="card"><h3>① CLI — a person, CI, or an agent via Bash</h3>
 <pre><span class="c1"># list recipes + their params</span>
 iworkflow workflows
 
@@ -295,7 +299,7 @@ iworkflow run --spec spec.json --run-id job1
 <span class="c1"># telemetry from past runs</span>
 iworkflow stats --run-id job1</pre>
     </div>
-    <div class="card"><h3>② Over MCP (an agent drives it)</h3>
+    <div class="card"><h3>② MCP — an agent as a registered tool</h3>
       <p>Register once, then any agent in the repo gets three tools:</p>
       <p><span class="pill"><b>iworkflow_ping</b></span>
          <span class="pill"><b>iworkflow_list_workflows</b></span>
@@ -310,9 +314,16 @@ iworkflow_workflow(
 <span class="c1"># …or goal="…" for a quick fan→synth.</span></pre>
     </div>
   </div>
-  <div class="note">Drive it three ways through one tool: <code>spec=</code> (define your
-  own), <code>workflow=</code>+<code>params=</code> (a recipe), or <code>goal=</code>
-  (sugar for a quick fan→synthesize over one question).</div>
+  <div class="note"><b>Same engine, different reach.</b> An agent can use <b>both</b>:
+  CLI (Bash) gives the full toolbelt (<code>stats</code>, <code>catalog</code>,
+  <code>--run-id</code> resume) but you parse stdout; MCP returns a <b>structured</b>
+  result and is <b>discoverable</b> in the tool list. Prefer <b>MCP</b> when it’s
+  registered; fall back to <b>CLI</b> when you need <code>stats</code>/<code>catalog</code>
+  or there’s no MCP host (CI, a cron-agent, a script). A third door — the <b>Python
+  SDK</b> (<code>run_spec(...)</code>) — is the only one that can widen <code>Limits</code>
+  or swap providers, and is what tests use. The <code>iworkflow_workflow</code> tool
+  itself drives three ways: <code>spec=</code> (your own), <code>workflow=</code>+
+  <code>params=</code> (a recipe), or <code>goal=</code> (a quick fan→synthesize).</div>
 </section>
 
 <section id="safety" class="wrap">
