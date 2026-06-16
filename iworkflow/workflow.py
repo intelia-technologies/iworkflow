@@ -34,7 +34,25 @@ DECISION_SCHEMA: dict[str, Any] = {
         "missing": {"type": "array", "items": {"type": "string"}},
     },
 }
-DEFAULT_SCHEMAS: dict[str, dict[str, Any]] = {"decision": DECISION_SCHEMA}
+# A supervisor agent inspects the accumulated run state at a checkpoint and emits
+# this DECISION (data, not code): continue as-is, adjust the remaining plan (skip
+# future steps / overlay params / inject new steps — each re-parsed under the same
+# Limits, so no privilege escalation), or abort. The executor applies it; the
+# control flow stays deterministic Python. See docs/design/supervisor.md.
+SUPERVISION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["action"],
+    "properties": {
+        "action": {"type": "string", "enum": ["continue", "adjust", "abort"]},
+        "reason": {"type": "string"},
+        "skip": {"type": "array", "items": {"type": "string"}},
+        "set_params": {"type": "object"},
+        "inject": {"type": "array", "items": {"type": "object"}},
+    },
+}
+DEFAULT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "decision": DECISION_SCHEMA, "supervision": SUPERVISION_SCHEMA}
 
 
 class WorkflowError(Exception):
@@ -63,6 +81,7 @@ class Limits:
     max_pipeline_items: int = 256
     max_loop_depth: int = 3
     max_loop_iterations: int = 100
+    max_supervisions: int = 8        # times a supervisor may mutate the plan (anti-runaway)
 
 
 # --------------------------------------------------------------------------
@@ -126,6 +145,99 @@ def _truthy(value: Any) -> bool:
 
 
 # --------------------------------------------------------------------------
+# `when` predicates — a declarative deviation guard (data, not code)
+# --------------------------------------------------------------------------
+# A leaf is {"path": "<dotted>", <op>: operand} with an optional "select" sub-path
+# applied to each element when the path resolves to a list (so "any review's
+# verdict is ISSUES" is one predicate). Leaves combine with {"all"|"any"|"not": …}.
+# This evaluates the same accumulated ctx the prompt sees — no code, so it's safe
+# to accept from an untrusted spec over MCP.
+_LEAF_OPS = {"eq", "ne", "in", "nin", "gte", "lte", "gt", "lt", "contains",
+             "truthy", "exists"}
+
+
+def _validate_when(cond: Any, *, depth: int = 0) -> None:
+    if depth > 8:
+        raise WorkflowError("when nests too deep")
+    if not isinstance(cond, dict):
+        raise WorkflowError("when must be an object")
+    if "all" in cond or "any" in cond:
+        key = "all" if "all" in cond else "any"
+        if not isinstance(cond[key], list) or not cond[key]:
+            raise WorkflowError(f"when.{key} must be a non-empty list")
+        for sub in cond[key]:
+            _validate_when(sub, depth=depth + 1)
+        return
+    if "not" in cond:
+        _validate_when(cond["not"], depth=depth + 1)
+        return
+    if "path" not in cond:
+        raise WorkflowError("when leaf needs a 'path' (or all/any/not)")
+    ops = [k for k in cond if k in _LEAF_OPS]
+    if len(ops) != 1:
+        raise WorkflowError(
+            f"when leaf needs exactly one operator of {sorted(_LEAF_OPS)}, got {ops}")
+
+
+def _as_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _eval_leaf_op(cond: dict[str, Any], value: Any) -> bool:
+    if "eq" in cond:
+        return value == cond["eq"]
+    if "ne" in cond:
+        return value != cond["ne"]
+    if "in" in cond:
+        return isinstance(cond["in"], list) and value in cond["in"]
+    if "nin" in cond:
+        return isinstance(cond["nin"], list) and value not in cond["nin"]
+    if "contains" in cond:
+        if isinstance(value, (str, list, tuple, dict)):
+            return cond["contains"] in value
+        return False
+    if "truthy" in cond:
+        return _truthy(value) is bool(cond["truthy"])
+    if "exists" in cond:
+        return (value is not None) is bool(cond["exists"])
+    a, b = _as_number(value), _as_number(cond.get("gte", cond.get("lte",
+           cond.get("gt", cond.get("lt")))))
+    if a is None or b is None:
+        return False
+    if "gte" in cond:
+        return a >= b
+    if "lte" in cond:
+        return a <= b
+    if "gt" in cond:
+        return a > b
+    return a < b                                  # "lt"
+
+
+def _eval_when(cond: Any, ctx: dict[str, Any]) -> bool:
+    """Evaluate a `when` predicate against the accumulated ctx. None → True
+    (no guard)."""
+    if cond is None:
+        return True
+    if "all" in cond:
+        return all(_eval_when(c, ctx) for c in cond["all"])
+    if "any" in cond:
+        return any(_eval_when(c, ctx) for c in cond["any"])
+    if "not" in cond:
+        return not _eval_when(cond["not"], ctx)
+    root = _lookup(cond["path"], ctx)
+    select = cond.get("select")
+    elements = root if isinstance(root, list) else [root]
+    # a leaf over a list is satisfied when ANY element satisfies it
+    return any(_eval_leaf_op(cond, _lookup(select, el) if select else el)
+               for el in elements)
+
+
+# --------------------------------------------------------------------------
 # parsed spec
 # --------------------------------------------------------------------------
 @dataclass
@@ -149,7 +261,7 @@ class Until:
 @dataclass
 class Step:
     id: str
-    kind: str                       # agent | parallel | pipeline | loop
+    kind: str                       # agent | parallel | pipeline | loop | supervisor
     needs: list[str] = field(default_factory=list)
     agent: AgentSpec | None = None             # kind == agent
     agents: list[AgentSpec] = field(default_factory=list)   # kind == parallel
@@ -159,6 +271,9 @@ class Step:
     until: Until | None = None                 # kind == loop
     max_iterations: int = 0                    # kind == loop (mandatory)
     collect: dict[str, Any] | None = None      # kind == loop
+    supervisor: AgentSpec | None = None        # kind == supervisor (the coordinator agent)
+    watch: list[str] | None = None             # kind == supervisor (steps to expose; None=all)
+    when: dict[str, Any] | None = None         # kind == supervisor (deviation guard; None=always)
 
 
 @dataclass
@@ -192,7 +307,7 @@ class WorkflowSpec:
         )
 
 
-_VALID_KINDS = {"agent", "parallel", "pipeline", "loop"}
+_VALID_KINDS = {"agent", "parallel", "pipeline", "loop", "supervisor"}
 _VALID_UNTIL = {"times", "count", "dry", "budget", "agent", "vote"}
 
 
@@ -321,6 +436,24 @@ def _parse_step(d: dict[str, Any], seen: set[str], *, top: bool,
         if step.until.kind in {"count", "dry"} and not step.collect:
             raise WorkflowError(
                 f"loop step {sid!r} with until.{step.until.kind} needs a collect block")
+    elif kind == "supervisor":
+        # The coordinator runs over the macro plan, so it is top-level only (a
+        # supervisor inside a loop body would supervise loop internals, not the run).
+        if not top:
+            raise WorkflowError(f"supervisor step {sid!r} must be a top-level step")
+        watch = d.get("watch")
+        if watch is not None and not isinstance(watch, list):
+            raise WorkflowError(f"supervisor step {sid!r}: watch must be a list of step ids")
+        # reuse the agent parser (prompt/prefer/role/sandbox/tools gating) — default
+        # its schema to the built-in `supervision` decision shape.
+        step.supervisor = _parse_agent({"schema": "supervision", **d}, sid, limits)
+        step.watch = watch
+        # optional deviation guard: the coordinator only fires when `when` is true,
+        # so the common path spends zero coordinator tokens. Validate it now.
+        when = d.get("when")
+        if when is not None:
+            _validate_when(when)
+        step.when = when
     return step
 
 
@@ -353,6 +486,11 @@ class _Executor:
         self.params = {**wf.params, **params}    # spec defaults, caller overrides
         self.ctx: dict[str, Any] = {"params": self.params, "steps": {}}
         self.calls = 0                           # global agent-call budget (anti fork-bomb)
+        # a supervisor step may mutate the REMAINING plan (skip/inject), so the run
+        # loop iterates a mutable copy by index rather than the frozen spec list.
+        self.plan: list[Step] = list(self.wf.steps)
+        self._ids: set[str] = {s.id for s in self.wf.steps}   # for inject id-collision checks
+        self.supervisions = 0                    # plan mutations so far (capped by Limits)
         # durable resume at the STEP boundary: a completed top-level step (a whole
         # loop included) is journaled, so a resumed run (same run_id) short-circuits
         # it to its stored result instead of replaying. An in-flight loop still
@@ -379,14 +517,28 @@ class _Executor:
     async def run(self) -> dict[str, Any]:
         status, aborted_at = "DONE", None
         try:
-            for step in self.wf.steps:
+            i = 0
+            while i < len(self.plan):                      # plan may grow/shrink via supervisor
+                step = self.plan[i]
                 if step.id in self._completed:            # journaled on a prior run
-                    log(f"RESUMED step {step.id} (journaled, 0 agents)")
+                    result = self._completed[step.id]
+                    self.ctx["steps"][step.id] = result
+                    if step.kind == "supervisor":
+                        # replay the supervisor's recorded decision so the resumed plan
+                        # is re-mutated identically — WITHOUT calling the agent again.
+                        self._apply_supervision(result.get("value") or {}, i, replay=True)
+                    else:
+                        log(f"RESUMED step {step.id} (journaled, 0 agents)")
+                    i += 1
                     continue
-                result = await self._exec_step(step, self.ctx, step.id)
+                if step.kind == "supervisor":
+                    result = await self._exec_supervisor(step, i)
+                else:
+                    result = await self._exec_step(step, self.ctx, step.id)
                 self.ctx["steps"][step.id] = result
                 self._completed[step.id] = result
                 self._persist_steps()
+                i += 1
         except _Abort as a:
             status, aborted_at = "ABORTED", a.step_id
         out = render(self.wf.output, self.ctx) if self.wf.output is not None else None
@@ -436,7 +588,10 @@ class _Executor:
             return await self._exec_parallel(step, ctx, label)
         if step.kind == "pipeline":
             return await self._exec_pipeline(step, ctx, label)
-        return await self._exec_loop(step, ctx, label)
+        if step.kind == "loop":
+            return await self._exec_loop(step, ctx, label)
+        # supervisor is top-level only (run() handles it); anything else is a bug.
+        raise WorkflowError(f"cannot execute step kind {step.kind!r} here")
 
     async def _exec_agent(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
         a = step.agent
@@ -480,6 +635,88 @@ class _Executor:
 
         out = await self.runner.pipeline(items, *[make_stage(a) for a in step.stages])
         return {"kind": "pipeline", "value": out, "ok": all(x is not None for x in out)}
+
+    # --- the supervisor (adaptive re-planning) ---------------------------
+    def _supervisor_state(self, step: Step) -> dict[str, Any]:
+        """The accumulated run state handed to the coordinator. `watch` (if set)
+        filters which prior steps' values are exposed; `remaining` lists the steps
+        still ahead so the coordinator can reason about what's left to do."""
+        watch = step.watch
+        steps_state = {sid: r.get("value") for sid, r in self.ctx["steps"].items()
+                       if watch is None or sid in watch}
+        done = set(self.ctx["steps"])
+        remaining = [s.id for s in self.plan
+                     if s.id not in done and s.kind != "supervisor"]
+        return {"steps": steps_state, "remaining": remaining, "params": dict(self.params)}
+
+    async def _exec_supervisor(self, step: Step, index: int) -> dict[str, Any]:
+        a = step.supervisor
+        assert a is not None
+        sctx = {**self.ctx, "supervisor": self._supervisor_state(step)}
+        # deviation guard: if `when` is false, the coordinator never fires — no agent
+        # call, no plan mutation. The common (on-track) path is free.
+        if step.when is not None and not _eval_when(step.when, sctx):
+            log(f"SUPERVISOR {step.id}: when=false → skipped (0 agents)")
+            return {"kind": "supervisor", "ok": True,
+                    "value": {"action": "continue", "skipped_guard": True},
+                    "applied": {"skipped": [], "injected": [], "params": [], "errors": []}}
+        res = await self._agent_call(a, sctx, step.id)
+        # a failed/garbage decision degrades to "continue" — never silently mutate.
+        decision = res.value if (res.ok and isinstance(res.value, dict)) else {"action": "continue"}
+        applied = self._apply_supervision(decision, index, replay=False)
+        out = {"kind": "supervisor", "value": decision, "applied": applied,
+               "provider": res.provider, "ok": res.ok}
+        if decision.get("action") == "abort":
+            out["aborted"] = True
+            # persist the decision BEFORE aborting so the bundle/resume keep the reason.
+            self.ctx["steps"][step.id] = out
+            self._completed[step.id] = out
+            self._persist_steps()
+            raise _Abort(step.id)
+        return out
+
+    def _apply_supervision(self, decision: dict[str, Any], index: int, *,
+                           replay: bool) -> dict[str, Any]:
+        """Apply a coordinator decision to the REMAINING plan (steps after `index`).
+        Only `adjust` mutates; `continue`/`abort` are no-ops here. Deterministic, so
+        replay on resume reproduces the same plan from the journaled decision."""
+        applied: dict[str, Any] = {"skipped": [], "injected": [], "params": [], "errors": []}
+        if decision.get("action") != "adjust":
+            return applied
+        self.supervisions += 1
+        if self.supervisions > self.limits.max_supervisions:
+            raise WorkflowLimitError(
+                f"workflow exceeded max_supervisions={self.limits.max_supervisions}")
+
+        set_params = decision.get("set_params")
+        if isinstance(set_params, dict) and set_params:
+            self.params.update(set_params)          # same object as ctx["params"] → future renders see it
+            applied["params"] = sorted(set_params.keys())
+
+        skip = decision.get("skip") or []
+        if skip:
+            done = set(self.ctx["steps"])
+            future = {self.plan[j].id for j in range(index + 1, len(self.plan))}
+            to_skip = {s for s in skip if s in future and s not in done}
+            if to_skip:                              # never touch the past, only the tail
+                self.plan = [s for k, s in enumerate(self.plan)
+                             if not (k > index and s.id in to_skip)]
+                applied["skipped"] = sorted(to_skip)
+
+        new_steps: list[Step] = []
+        for raw in (decision.get("inject") or []):
+            trial_ids = set(self._ids)               # don't pollute ids with a failed parse
+            try:                                     # same Limits → no sandbox/tool escalation
+                st = _parse_step(raw, trial_ids, top=True, limits=self.limits, depth=0)
+            except WorkflowError as e:               # malformed inject: drop it, keep the run
+                applied["errors"].append(str(e)[:160])
+                continue
+            self._ids = trial_ids                    # commit only a fully-parsed step's id
+            new_steps.append(st)
+        if new_steps:
+            self.plan[index + 1:index + 1] = new_steps   # run right after this supervisor
+            applied["injected"] = [s.id for s in new_steps]
+        return applied
 
     # --- the loop ---------------------------------------------------------
     async def _exec_loop(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:

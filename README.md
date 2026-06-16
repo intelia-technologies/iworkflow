@@ -90,7 +90,8 @@ iworkflow run review --params '{"topic":"the scheduler","subject_a":"...","subje
 ```
 
 Built-ins: `fan_synthesize`, `review` (gate→fan→audit), `roadmap`, `deep_review`
-(an agent-decided loop). A host project drops its own `*.json` specs into
+(an agent-decided loop), `adaptive_review` (a supervisor that injects a deep audit
+only when the reviews surface issues). A host project drops its own `*.json` specs into
 `.iworkflow/recipes/` and they appear alongside the built-ins — iworkflow stays
 domain-agnostic.
 
@@ -103,6 +104,7 @@ where a Python closure can't go). A spec is a list of `steps`, each one of:
 | `parallel` | a fan-out barrier of agents |
 | `pipeline` | per-item staged flow (no barrier between stages) |
 | `loop` | repeat a `body` until a stop condition — see below |
+| `supervisor` | a coordinator inspects run state and adapts the remaining plan — see below |
 
 Prompts template against `{{params.*}}`, `{{steps.<id>.value.*}}`, and inside a
 loop `{{loop.collected}}` / `{{loop.iteration}}` / `{{loop.decision.*}}`.
@@ -125,11 +127,45 @@ spec deterministically (no quota). An agent drives the same thing over MCP:
 `iworkflow_workflow(spec={...})`. A spec that proves itself can be saved as a named
 recipe — the dynamic → confirmed → preset calcification.
 
+**Supervisor** — adaptive re-planning without giving up determinism. A `supervisor`
+step runs a coordinator agent over the accumulated run state (`{{supervisor.steps}}`,
+`{{supervisor.remaining}}`) at a checkpoint; it returns a **decision as data** that the
+deterministic executor applies to the *remaining* plan:
+
+| `action` | effect |
+|---|---|
+| `continue` | proceed unchanged |
+| `adjust` | `skip` future steps · `set_params` overlay · `inject` new steps (re-parsed under the same `Limits`) |
+| `abort` | stop the run with a reason |
+
+The coordinator only ever touches the tail (never the past); injected steps can't
+escalate sandbox or tools (same validator), a malformed inject degrades gracefully,
+and the whole thing is journaled so a resume re-applies the *same* mutation with zero
+new provider calls. It's the `gate`/critic-loop idea taken one rung up — from
+*stop/continue* to *reshape the plan* — and the safe, data-not-code answer to the
+"orchestrator that programs the next sub-plan" pattern.
+
+An optional `when` guard makes the coordinator **fire only on a deviation** — a
+declarative predicate over the same state, so the on-track path spends zero
+coordinator tokens. Leaves are `{"path": "<dotted>", <op>: operand}` (ops: `eq`,
+`ne`, `in`, `nin`, `gte`, `lte`, `gt`, `lt`, `contains`, `truthy`, `exists`) with an
+optional `select` sub-path applied to each element when the path is a list (so *"any
+review's verdict is ISSUES"* is one predicate); leaves combine with `all` / `any` /
+`not`. `adaptive_review` uses it to skip the audit entirely unless a review flags
+something:
+
+```jsonc
+"when": {"any": [
+  {"path": "steps.fan.value", "select": "value.verdict", "in": ["ISSUES"]},
+  {"path": "steps.fan.value", "select": "value.severity", "eq": "high"}]}
+```
+
 **Safety policy.** Because a spec can arrive from an untrusted agent over MCP, every
 run is bounded by a `Limits` policy (conservative by default): only a `read-only`
 sandbox is allowed (a spec can't request `codex exec --sandbox danger-…`), tool
 injection is off, and the run is capped on total agent calls, parallel width,
-pipeline items, loop nesting depth, and per-loop iterations — so no spec, however
+pipeline items, loop nesting depth, per-loop iterations, and supervisor plan
+mutations — so no spec, however
 malformed or hostile, can fan out into a fork-bomb of paid CLI spawns. Trusted
 callers (CLI/SDK) widen the policy explicitly via `run_spec(..., limits=Limits(...))`.
 

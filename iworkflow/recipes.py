@@ -140,8 +140,47 @@ DEEP_REVIEW: dict[str, Any] = {
     "output": "{{steps.sweep.value}}",
 }
 
+ADAPTIVE_REVIEW: dict[str, Any] = {
+    "name": "adaptive_review",
+    "description": "Gate, fan two reviews, then a SUPERVISOR inspects the findings and "
+                   "either passes through or injects a deep adversarial audit — the "
+                   "coordinator adapts the plan to what the reviews actually surfaced.",
+    "params": {"topic": None, "subject_a": None, "subject_b": None},
+    "schemas": {"gate": GATE_SCHEMA, "review": REVIEW_SCHEMA},
+    "steps": [
+        {"id": "gate", "kind": "agent", "schema": "gate", "prefer": ["claude", "codex"],
+         "gate": {"field": "verdict", "abort_on": "BLOCKED"},
+         "prompt": "Assess whether {{params.topic}} is sound enough to review in detail. "
+                   "verdict=DONE to proceed, BLOCKED if fundamentally broken."},
+        {"id": "fan", "kind": "parallel", "needs": ["gate"], "agents": [
+            {"id": "a", "schema": "review", "prefer": ["codex", "gemini"],
+             "prompt": "Review this for CORRECTNESS. verdict=PASS/ISSUES.\n{{params.subject_a}}"},
+            {"id": "b", "schema": "review", "prefer": ["gemini", "codex"],
+             "prompt": "Review this for ROBUSTNESS. verdict=PASS/ISSUES.\n{{params.subject_b}}"},
+        ]},
+        {"id": "supervise", "kind": "supervisor", "needs": ["fan"],
+         "prefer": ["claude", "codex"], "watch": ["fan"],
+         # only fire the coordinator when a review actually flags something — the
+         # clean path (both PASS, low severity) spends zero coordinator tokens.
+         "when": {"any": [
+             {"path": "steps.fan.value", "select": "value.verdict", "in": ["ISSUES"]},
+             {"path": "steps.fan.value", "select": "value.severity", "eq": "high"}]},
+         "prompt": "You coordinate a code review. The two reviews returned:\n"
+                   "{{supervisor.steps}}\n\nSubjects under review:\nA: {{params.subject_a}}\n"
+                   "B: {{params.subject_b}}\n\nIf EITHER review verdict is ISSUES (or severity "
+                   "is high), set action=adjust and inject exactly one deep-audit step — "
+                   "inject=[{\"id\":\"audit\",\"kind\":\"agent\",\"prefer\":[\"gemini\","
+                   "\"codex\"],\"prompt\":\"<a concrete adversarial-audit instruction naming "
+                   "the specific correctness risk you want chased down>\"}]. If both reviews "
+                   "PASS cleanly, set action=continue."},
+    ],
+    "output": {"gate": "{{steps.gate.value}}", "reviews": "{{steps.fan.value}}",
+               "supervision": "{{steps.supervise.value}}", "audit": "{{steps.audit.value}}"},
+}
+
 BUILTIN: dict[str, dict[str, Any]] = {
-    spec["name"]: spec for spec in (FAN_SYNTHESIZE, REVIEW, ROADMAP, DEEP_REVIEW)
+    spec["name"]: spec
+    for spec in (FAN_SYNTHESIZE, REVIEW, ROADMAP, DEEP_REVIEW, ADAPTIVE_REVIEW)
 }
 
 DEFAULT_RECIPE_DIR = ".iworkflow/recipes"
