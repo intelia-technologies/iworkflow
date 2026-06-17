@@ -81,15 +81,12 @@ def _default_runner(
     catalog: ToolCatalog | None = None,
     journal_dir: str = ".iworkflow",
 ) -> Runner:
-    caps = caps or {"codex": 2, "gemini": 2, "claude": 1, "cursor": 2, "cursor_flash": 2}
+    caps = caps or {"codex": 2, "gemini": 2, "claude": 1, "cursor": 2}
     providers = {
         "codex": CodexProvider("codex", timeout_s=timeout_s),
         "gemini": GeminiProvider("gemini", timeout_s=timeout_s),
         "claude": ClaudeInteractiveProvider("claude", timeout_s=timeout_s),
-        "cursor": CursorProvider("cursor", model="composer-2.5", timeout_s=timeout_s),
-        "cursor_flash": CursorProvider(
-            "cursor_flash", model="composer-2.5-flash", timeout_s=timeout_s,
-        ),
+        "cursor": CursorProvider("cursor", timeout_s=timeout_s),
     }
     return Runner(
         run_id,
@@ -353,6 +350,13 @@ def check_sessions(
 
     return probe_sessions(providers, timeout_s=timeout_s)
 
+
+def list_models() -> dict[str, Any]:
+    """Catalog of models exposed by each subscription CLI provider."""
+    from .provider_models import list_provider_models
+    return list_provider_models()
+
+
 def main() -> None:
     from mcp.server.fastmcp import FastMCP
 
@@ -461,8 +465,13 @@ def main() -> None:
         """Check which subscription CLIs are logged in (codex, claude, gemini, cursor).
 
         Run before dispatching work to avoid silent failures. Optional `providers`
-        subset: codex, claude, gemini, cursor, cursor_flash."""
+        subset: codex, claude, gemini, cursor."""
         return check_sessions(providers, timeout_s=timeout_s)
+
+    @server.tool()
+    def iworkflow_models() -> dict[str, Any]:
+        """List models available per provider (codex, claude, gemini, cursor)."""
+        return list_models()
 
     server.run()
 

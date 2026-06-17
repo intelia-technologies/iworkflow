@@ -96,7 +96,8 @@ class Runner:
     def _record(self, res: AgentResult, *, prompt: str, schema: dict | None,
                 attempts: list[Attempt], t_start: float,
                 kind: str | None = None, tools: tuple[str, ...] = (),
-                usage: dict[str, Any] | None = None) -> None:
+                usage: dict[str, Any] | None = None,
+                model: str | None = None) -> None:
         u = usage or {}
         self.ledger.append(LedgerRecord(
             run_id=self.run_id, label=res.label, status=res.status,
@@ -109,11 +110,14 @@ class Runner:
                          else None),
             retry_after=None, kind=kind, tools=list(tools),
             input_tokens=u.get("input_tokens"), output_tokens=u.get("output_tokens"),
-            cost_usd=u.get("cost_usd")))
+            cost_usd=u.get("cost_usd"), model=model or u.get("model")))
 
     # --- the agent() primitive -------------------------------------------
     async def agent(self, prompt: str, *, label: str, schema: dict | None = None,
-                    role: str | None = None, prefer: list[str] | None = None,
+                    role: str | None = None,
+                    prefer: list[str | dict[str, Any]] | None = None,
+                    model: str | None = None,
+                    models: dict[str, str] | None = None,
                     sandbox: str = "read-only",
                     cwd: str | None = None,
                     tools: list[str] | None = None,
@@ -143,19 +147,30 @@ class Runner:
         else:
             toolset = None
         tool_names = tuple(s.name for s in toolset.specs) if toolset else ()
+        from .provider_models import format_prefer, parse_prefer_list
+
         if prefer:
-            order, why = [p for p in prefer if p in self.providers], "explicit"
+            targets = [
+                (p, m) for p, m in parse_prefer_list(
+                    prefer, model=model, models=models)
+                if p in self.providers
+            ]
+            why = "explicit"
         else:
-            order, why = route(role, schema=schema, prompt=prompt,
-                               available=list(self.providers))
-            if self._stats:                              # empirical demotion
-                adjusted = adjust_order(order, self._stats)
-                if adjusted != order:
-                    why, order = f"{why}→learned", adjusted
-        log(f"ROUTE    {label}: {why} → {order}")
-        self._emit(label, "route", kind=why, order=order, tools=list(tool_names))
+            targets, why = route(role, schema=schema, prompt=prompt,
+                                 available=list(self.providers))
+            if self._stats:
+                providers_only = [p for p, _ in targets]
+                adjusted = adjust_order(providers_only, self._stats)
+                if adjusted != providers_only:
+                    by_prov = {p: m for p, m in targets}
+                    targets = [(p, by_prov.get(p)) for p in adjusted]
+                    why = f"{why}→learned"
+        log(f"ROUTE    {label}: {why} → {format_prefer(targets)}")
+        self._emit(label, "route", kind=why, order=format_prefer(targets),
+                   tools=list(tool_names))
         attempts: list[Attempt] = []
-        for name in order:
+        for name, target_model in targets:
             prov = self.providers[name]
             # throttle-aware: skip a provider still cooling down from a recent limit,
             # so we don't waste an attempt hammering a known-throttled subscription.
@@ -168,18 +183,22 @@ class Runner:
             # block; codex/claude use a native schema) — just pass it through.
             use_schema = schema
             async with self.sems[name]:
-                log(f"DISPATCH {label} → {name} (cap {self.caps.get(name)})")
-                self._emit(label, "dispatch", provider=name)
+                dispatch_model = target_model or (model if len(targets) == 1 else None)
+                model_note = f" model={dispatch_model}" if dispatch_model else ""
+                log(f"DISPATCH {label} → {name}{model_note} (cap {self.caps.get(name)})")
+                self._emit(label, "dispatch", provider=name, model=dispatch_model)
                 try:
                     value = await prov.run(prompt, schema=use_schema,
-                                           sandbox=sandbox, cwd=effective_cwd, toolset=toolset)
+                                           sandbox=sandbox, cwd=effective_cwd,
+                                           toolset=toolset, model=dispatch_model)
                     # read usage immediately (no await between → race-free in asyncio)
                     usage = getattr(prov, "last_usage", None) or {}
                     attempts.append(Attempt(name, "DONE"))
                     res = AgentResult(label, "DONE", name, value, attempts, prompt_sha=prompt_hash)
                     self._done[label] = res      # within-process dedup, not just cross-process
                     self._record(res, prompt=prompt, schema=schema, attempts=attempts,
-                                 t_start=t_start, kind=why, tools=tool_names, usage=usage)
+                                 t_start=t_start, kind=why, tools=tool_names, usage=usage,
+                                 model=dispatch_model or usage.get("model"))
                     self._emit(label, "done", provider=name,
                                ms=round((time.time() - t_start) * 1000),
                                input_tokens=usage.get("input_tokens"),

@@ -27,7 +27,7 @@ def test_route_honors_explicit_role():
     )
 
     assert why == "role=auditor"
-    assert order == ["gemini", "codex"]
+    assert order == [("gemini", None), ("codex", None)]
 
 
 def test_route_filters_unavailable_providers():
@@ -39,7 +39,7 @@ def test_route_filters_unavailable_providers():
     )
 
     assert why == "role=doer"
-    assert order == ["gemini"]
+    assert order == [("gemini", None)]
 
 
 def test_schema_only_prompt_routes_codex_first():
@@ -51,4 +51,4 @@ def test_schema_only_prompt_routes_codex_first():
     )
 
     assert why == "inferred=structured"
-    assert order == ["codex", "gemini"]
+    assert order == [("codex", None), ("gemini", None)]

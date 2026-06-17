@@ -47,7 +47,7 @@ CAPABILITIES = {
         "scarcity": "high — reserve for delicate / high-value work",
     },
     "cursor": {
-        "model": "Composer 2.5 (cursor-agent CLI, Cursor subscription)",
+        "model": "Composer 2.5 / 2.5 Flash (see provider_models)",
         "great_at": ["repo-aware codegen", "fast implementation", "tool use",
                      "review in project context"],
         "weak_at": ["native structured output (none)", "headless without login"],
@@ -55,16 +55,6 @@ CAPABILITIES = {
         "context": "large",
         "billing": "Cursor subscription",
         "scarcity": "medium",
-    },
-    "cursor_flash": {
-        "model": "Composer 2.5 Flash (cursor-agent CLI, Cursor subscription)",
-        "great_at": ["cheap fan-out", "classification", "quick reviews",
-                     "high-throughput proposals"],
-        "weak_at": ["native structured output (none)", "delicate architecture"],
-        "structured_output": "none (JSON-block fallback)",
-        "context": "large",
-        "billing": "Cursor subscription",
-        "scarcity": "low",
     },
 }
 
@@ -76,17 +66,26 @@ KIND_ROUTES = {
     "implement":  ["codex", "cursor", "claude", "gemini"],   # codegen → codex; delicate → claude
     "structured": ["codex", "gemini", "cursor", "claude"],   # native schema → codex
     "review":     ["codex", "cursor", "gemini"],
-    "audit":      ["gemini", "codex", "cursor_flash"],             # independent, schema-less → gemini
+    "audit":      ["gemini", "codex", "cursor"],             # independent, schema-less → gemini
     "sweep":      ["gemini", "claude", "cursor"],            # huge context → gemini's 1M
-    "classify":   ["cursor_flash", "gemini", "codex"],             # cheap / fast
+    "classify":   ["cursor", "gemini", "codex"],             # cheap / fast (cursor→flash via hints)
     "reason":     ["claude", "cursor", "codex"],             # delicate judgment → worth Claude
     "write":      ["claude", "cursor", "gemini"],            # prose → Claude
-    "default":    ["codex", "cursor_flash", "gemini"],             # cheap, abundant, capable
+    "default":    ["codex", "cursor", "gemini"],             # cheap, abundant, capable
     # legacy role aliases (back-compat with existing workflows)
     "doer":       ["codex", "gemini"],
     "core":       ["claude", "codex"],
     "auditor":    ["gemini", "codex"],
     "sweep_":     ["gemini", "claude"],
+}
+
+# Per kind, optional default model when a provider is auto-routed (vendor id → model id).
+KIND_MODEL_HINTS: dict[str, dict[str, str]] = {
+    "audit": {"cursor": "composer-2.5-flash"},
+    "classify": {"cursor": "composer-2.5-flash", "gemini": "Gemini 3.5 Flash (Medium)"},
+    "default": {"cursor": "composer-2.5-flash"},
+    "implement": {"cursor": "composer-2.5"},
+    "review": {"cursor": "composer-2.5"},
 }
 
 _LARGE_PROMPT = 30_000   # chars → treat as a context sweep
@@ -118,17 +117,35 @@ def infer_kind(prompt: str, schema: dict | None) -> str:
 
 
 def route(role: str | None, *, schema: dict | None, prompt: str,
-          available: list[str]) -> tuple[list[str], str]:
-    """Return (ordered providers restricted to `available`, decision_label)."""
+          available: list[str]) -> tuple[list[tuple[str, str | None]], str]:
+    """Return (ordered (provider, model) targets, decision_label).
+
+    Model may be None → use the provider CLI default or agent-level override.
+  """
+    from .provider_models import LEGACY_PROVIDER_ALIASES, resolve_model
+
     if role and role in KIND_ROUTES:
         order, why = KIND_ROUTES[role], f"role={role}"
+        hint_key = role
     elif role:
         order, why = KIND_ROUTES["default"], f"role={role}?→default"
+        hint_key = "default"
     else:
         kind = infer_kind(prompt, schema)
         order, why = KIND_ROUTES[kind], f"inferred={kind}"
-    picked = [p for p in order if p in available]
-    if not picked:                       # nothing preferred is available
-        picked = list(available)
+        hint_key = kind
+    hints = KIND_MODEL_HINTS.get(hint_key, {})
+    picked: list[tuple[str, str | None]] = []
+    for name in order:
+        if name not in available:
+            continue
+        if name in LEGACY_PROVIDER_ALIASES:
+            prov, model = LEGACY_PROVIDER_ALIASES[name]
+            if prov in available:
+                picked.append((prov, resolve_model(prov, model)))
+            continue
+        picked.append((name, resolve_model(name, hints.get(name))))
+    if not picked:
+        picked = [(p, None) for p in available]
         why += "→any"
     return picked, why

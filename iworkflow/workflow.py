@@ -245,7 +245,9 @@ class AgentSpec:
     id: str
     prompt: str
     schema: str | dict[str, Any] | None = None
-    prefer: list[str] | None = None
+    prefer: list[str | dict[str, Any]] | None = None
+    model: str | None = None
+    models: dict[str, str] | None = None
     role: str | None = None
     sandbox: str = "read-only"
     tools: list[str] | None = None
@@ -333,6 +335,8 @@ def _parse_agent(d: dict[str, Any], fallback_id: str, limits: Limits) -> AgentSp
         prompt=d["prompt"],
         schema=d.get("schema"),
         prefer=d.get("prefer"),
+        model=d.get("model"),
+        models=d.get("models"),
         role=d.get("role"),
         sandbox=sandbox,
         tools=tools,
@@ -571,6 +575,8 @@ class _Executor:
             label=label,
             schema=self._schema(a.schema),
             prefer=a.prefer,
+            model=a.model,
+            models=a.models,
             role=a.role,
             sandbox=a.sandbox,
             tools=a.tools,
@@ -807,7 +813,8 @@ class _Executor:
         if until.kind == "agent":
             res = await self._agent_call(
                 AgentSpec(id="decide", prompt=p["prompt"], schema=schema,
-                          prefer=p.get("prefer"), role=p.get("role")),
+                          prefer=p.get("prefer"), model=p.get("model"),
+                          models=p.get("models"), role=p.get("role")),
                 loop_ctx, f"{label}#decide{iteration}")
             verdict = res.value.get(field_name) if isinstance(res.value, dict) else None
             return res.value, (res.ok and verdict in stop_set)
@@ -822,7 +829,8 @@ class _Executor:
             lens = f"\n\nJudge specifically through the {lenses[i]} lens." if lenses else ""
             return lambda: self._agent_call(
                 AgentSpec(id=f"vote{i}", prompt=prompt + lens, schema=schema,
-                          prefer=p.get("prefer")),
+                          prefer=p.get("prefer"), model=p.get("model"),
+                          models=p.get("models")),
                 loop_ctx, f"{label}#vote{iteration}.{i}")
 
         results = await self.runner.parallel([voter(i) for i in range(count)])

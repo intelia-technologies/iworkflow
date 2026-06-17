@@ -318,6 +318,26 @@ def _cmd_graph(name: str | None, spec_path: str | None, html_path: str | None,
         except Exception:
             pass
 
+def _cmd_models(as_json: bool) -> None:
+    from .provider_models import list_provider_models
+    report = list_provider_models()
+    if as_json:
+        import json
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        for name, meta in report["providers"].items():
+            default = meta.get("default") or "(cli default)"
+            print(f"{name} — {meta['label']}")
+            print(f"  default: {default}")
+            for m in meta["models"]:
+                aliases = f"  aliases: {', '.join(m['aliases'])}" if m["aliases"] else ""
+                notes = f"  — {m['notes']}" if m.get("notes") else ""
+                print(f"  • {m['id']}{notes}")
+                if aliases:
+                    print(f"    {aliases.strip()}")
+            print()
+
+
 def _cmd_sessions(providers: list[str] | None, timeout: float, as_json: bool) -> None:
     from .sessions import format_sessions_text, probe_sessions
 
@@ -377,10 +397,13 @@ def main(argv: list[str] | None = None) -> None:
     p_graph.add_argument("--mermaid", action="store_true", help="print raw Mermaid to stdout instead of generating HTML (may break terminals that auto-render mermaid)")
     p_graph.add_argument("--recipe-dir", default=None, help="extra recipe directory")
 
+    p_models = sub.add_parser("models", help="list models exposed by each provider CLI")
+    p_models.add_argument("--json", action="store_true", help="emit JSON catalog")
+
     p_sess = sub.add_parser("sessions", help="check which subscription CLIs are logged in")
     p_sess.add_argument(
         "providers", nargs="*", default=None,
-        help="subset: codex claude gemini cursor cursor_flash (default: all)",
+        help="subset: codex claude gemini cursor (default: all)",
     )
     p_sess.add_argument("--timeout", type=float, default=12.0, help="per-probe timeout (seconds)")
     p_sess.add_argument("--json", action="store_true", help="emit JSON report")
@@ -403,6 +426,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_stats(args.journal_dir, args.run_id)
     elif args.cmd == "graph":
         _cmd_graph(args.name, args.spec, args.html, args.publish, args.recipe_dir, args.mermaid)
+    elif args.cmd == "models":
+        _cmd_models(args.json)
     elif args.cmd == "sessions":
         _cmd_sessions(args.providers, args.timeout, args.json)
 

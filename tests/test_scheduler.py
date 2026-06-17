@@ -8,7 +8,7 @@ class CwdRecordingProvider(Provider):
         super().__init__("codex")
         self.cwd = None
 
-    async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None):
+    async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None, model=None):
         self.cwd = cwd
         return {"verdict": "DONE", "summary": prompt}
 

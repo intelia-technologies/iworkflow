@@ -73,6 +73,8 @@ def render_agent(step_id: str, agent_spec: dict[str, Any],
         label_lines.append(f"role: {_text(role, ctx)}")
     if prefer:
         label_lines.append(f"prefer: {_join(prefer, ctx)}")
+    if agent_spec.get("model"):
+        label_lines.append(f"model: {_text(agent_spec.get('model'), ctx)}")
     if tools:
         label_lines.append(f"tools: {_join(tools, ctx)}")
 
@@ -117,6 +119,8 @@ def render_parallel(step_id: str, step_spec: dict[str, Any],
             a_label_lines.append(f"role: {_text(role, ctx)}")
         if prefer:
             a_label_lines.append(f"prefer: {_join(prefer, ctx)}")
+        if a.get("model"):
+            a_label_lines.append(f"model: {_text(a.get('model'), ctx)}")
         if tools:
             a_label_lines.append(f"tools: {_join(tools, ctx)}")
 
@@ -152,6 +156,8 @@ def render_pipeline(step_id: str, step_spec: dict[str, Any],
             s_label_lines.append(f"role: {_text(role, ctx)}")
         if prefer:
             s_label_lines.append(f"prefer: {_join(prefer, ctx)}")
+        if s.get("model"):
+            s_label_lines.append(f"model: {_text(s.get('model'), ctx)}")
         if tools:
             s_label_lines.append(f"tools: {_join(tools, ctx)}")
 

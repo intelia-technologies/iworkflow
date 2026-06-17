@@ -122,6 +122,7 @@ class Provider:
         sandbox: str,
         cwd: str | None = None,
         toolset: ToolSet | None = None,
+        model: str | None = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -187,6 +188,7 @@ class CodexProvider(Provider):
         sandbox: str = "read-only",
         cwd: str | None = None,
         toolset: ToolSet | None = None,
+        model: str | None = None,
     ) -> Any:
         self.last_usage: dict[str, Any] | None = None
         schema_file = None
@@ -198,8 +200,9 @@ class CodexProvider(Provider):
             # message to a file (so the answer survives the event stream).
             argv = ["codex", "exec", "--sandbox", sandbox, "--skip-git-repo-check",
                     "--color", "never", "--json", "-o", out_file]
-            if self.model:
-                argv += ["-m", self.model]
+            effective_model = model if model is not None else self.model
+            if effective_model:
+                argv += ["-m", effective_model]
             mcp_servers = (toolset.mcp_servers()
                            if toolset is not None and not toolset.is_empty() else {})
             if mcp_servers:
@@ -248,6 +251,7 @@ class ClaudeProvider(Provider):
         sandbox: str = "read-only",
         cwd: str | None = None,
         toolset: ToolSet | None = None,
+        model: str | None = None,
     ) -> Any:
         self.last_usage: dict[str, Any] | None = None
         schema_file = mcp_file = None
@@ -260,8 +264,9 @@ class ClaudeProvider(Provider):
             argv = ["claude", "-p", "--output-format", "json",
                     "--strict-mcp-config", "--setting-sources", "user",
                     "--permission-mode", "plan"]  # plan = read-only-ish for the spike
-            if self.model:
-                argv += ["--model", self.model]
+            effective_model = model if model is not None else self.model
+            if effective_model:
+                argv += ["--model", effective_model]
             mcp_servers = (toolset.mcp_servers()
                            if toolset is not None and not toolset.is_empty() else {})
             if mcp_servers:
@@ -314,10 +319,12 @@ class GeminiProvider(Provider):
         sandbox: str = "read-only",
         cwd: str | None = None,
         toolset: ToolSet | None = None,
+        model: str | None = None,
     ) -> Any:
         argv = ["agy", "-p"]
-        if self.model:
-            argv += ["--model", self.model]
+        effective_model = model if model is not None else self.model
+        if effective_model:
+            argv += ["--model", effective_model]
         full = _prompt_with_toolset(prompt, toolset)
         if schema:
             full += ("\n\nReturn ONLY a JSON object matching this schema, "
@@ -445,9 +452,11 @@ class CursorProvider(Provider):
         sandbox: str = "read-only",
         cwd: str | None = None,
         toolset: ToolSet | None = None,
+        model: str | None = None,
     ) -> Any:
         self.last_usage: dict[str, Any] | None = None
-        model = _resolve_cursor_model(self.model, default=self.default_model)
+        effective = model if model is not None else self.model
+        resolved = _resolve_cursor_model(effective, default=self.default_model)
         full = _prompt_with_toolset(prompt, toolset)
         if schema:
             full += (
@@ -457,7 +466,7 @@ class CursorProvider(Provider):
         else:
             full += _SENTINEL_INSTRUCTION
 
-        argv = [self.binary, "-p", "--output-format", "json", "--model", model]
+        argv = [self.binary, "-p", "--output-format", "json", "--model", resolved]
         if self.use_force:
             argv.append("-f")
         argv.append(full)
@@ -477,7 +486,7 @@ class CursorProvider(Provider):
             "output_tokens": None,
             "cost_usd": None,
             "duration_ms": duration_ms,
-            "model": model,
+            "model": resolved,
         }
 
         if schema:
@@ -522,6 +531,7 @@ class FakeProvider(Provider):
         sandbox: str = "read-only",
         cwd: str | None = None,
         toolset: ToolSet | None = None,
+        model: str | None = None,
     ) -> Any:
         self._calls += 1
         self.last_usage = {"input_tokens": 10, "output_tokens": 5, "cost_usd": None}
@@ -592,6 +602,7 @@ class ClaudeInteractiveProvider(Provider):
         sandbox: str = "read-only",
         cwd: str | None = None,
         toolset: ToolSet | None = None,
+        model: str | None = None,
     ) -> Any:
         self._seq += 1
         session = f"iwf-{os.getpid()}-{self._seq}"

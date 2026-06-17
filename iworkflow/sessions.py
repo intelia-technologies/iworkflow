@@ -426,35 +426,15 @@ def probe_cursor(*, timeout_s: float = 12.0) -> SessionProbe:
     )
 
 
-def probe_cursor_flash(*, timeout_s: float = 12.0) -> SessionProbe:
-    """Same Cursor login as `cursor`; distinct provider id for routing caps."""
-    base = probe_cursor(timeout_s=timeout_s)
-    return SessionProbe(
-        provider="cursor_flash",
-        label="Cursor Agent (composer-2.5-flash)",
-        binary=base.binary,
-        status=base.status,
-        logged_in=base.logged_in,
-        detail=base.detail,
-        auth_method=base.auth_method,
-        email=base.email,
-        subscription=base.subscription,
-        model="composer-2.5-flash",
-        version=base.version,
-        fix_hint=base.fix_hint,
-        raw=base.raw,
-    )
 
-
-_PROBES: dict[str, Callable[..., SessionProbe]] = {
-    "codex": probe_codex,
-    "claude": probe_claude,
-    "gemini": probe_gemini,
-    "cursor": probe_cursor,
-    "cursor_flash": probe_cursor_flash,
+_PROBE_FN_NAMES: dict[str, str] = {
+    "codex": "probe_codex",
+    "claude": "probe_claude",
+    "gemini": "probe_gemini",
+    "cursor": "probe_cursor",
 }
 
-_DEFAULT_ORDER = ("codex", "claude", "gemini", "cursor", "cursor_flash")
+_DEFAULT_ORDER = ("codex", "claude", "gemini", "cursor")
 
 
 def probe_sessions(
@@ -466,7 +446,8 @@ def probe_sessions(
     names = providers or list(_DEFAULT_ORDER)
     sessions: list[SessionProbe] = []
     for name in names:
-        fn = _PROBES.get(name)
+        fn_name = _PROBE_FN_NAMES.get(name)
+        fn = globals().get(fn_name) if fn_name else None
         if fn is None:
             sessions.append(SessionProbe(
                 provider=name,
@@ -477,10 +458,7 @@ def probe_sessions(
                 detail=f"unknown provider {name!r}",
             ))
             continue
-        if name == "cursor_flash":
-            sessions.append(fn(timeout_s=timeout_s))
-        else:
-            sessions.append(fn(timeout_s=timeout_s))
+        sessions.append(fn(timeout_s=timeout_s))
 
     ready = [s.provider for s in sessions if s.logged_in is True]
     not_ready = [s.provider for s in sessions if s.logged_in is False]

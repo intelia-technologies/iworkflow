@@ -23,7 +23,7 @@ class ScriptedProvider(Provider):
         self.responder = responder
         self._n = 0
 
-    async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None):
+    async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None, model=None):
         self.last_usage = {"input_tokens": 1, "output_tokens": 5, "cost_usd": None}
         i = self._n
         self._n += 1

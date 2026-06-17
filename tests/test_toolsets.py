@@ -94,6 +94,7 @@ class RecordingProvider(Provider):
         sandbox="read-only",
         cwd=None,
         toolset=None,
+        model=None,
     ):
         self.toolset = toolset
         return {"verdict": "DONE", "summary": prompt}

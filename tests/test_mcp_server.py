@@ -56,7 +56,7 @@ def test_run_workflow_degrades_when_synth_exhausted(tmp_path):
     )
 
     class SynthExhaust(FakeProvider):
-        async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None):
+        async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None, model=None):
             if "Synthesize" in prompt:
                 from iworkflow.providers import RateLimited
                 raise RateLimited("simulated")

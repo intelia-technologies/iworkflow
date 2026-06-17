@@ -3,6 +3,7 @@ from .providers import (
     FakeProvider, GeminiProvider, Provider, ProviderError, RateLimited,
 )
 from .learn import adjust_order
+from .provider_models import list_provider_models, resolve_model
 from .sessions import format_sessions_text, probe_sessions
 from .routing import CAPABILITIES, KIND_ROUTES, infer_kind, route
 from .scheduler import AgentResult, Runner, ROUTES, log
@@ -20,7 +21,7 @@ __all__ = [
     "CursorProvider", "GeminiProvider", "FakeProvider", "RateLimited", "ProviderError",
     "CAPABILITIES", "KIND_ROUTES", "infer_kind", "route", "provider_stats",
     "run_summary", "adjust_order",
-    "probe_sessions", "format_sessions_text",
+    "probe_sessions", "format_sessions_text", "list_provider_models", "resolve_model",
     "ToolCatalog", "ToolKind", "ToolSet", "ToolSpec",
     "run_spec", "render", "WorkflowSpec", "WorkflowError", "WorkflowLimitError",
     "Limits", "DECISION_SCHEMA", "SUPERVISION_SCHEMA",
