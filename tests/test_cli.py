@@ -210,7 +210,13 @@ def test_cli_run_forwards_allow_tools(monkeypatch, tmp_path):
     spec_file = tmp_path / "dummy_spec.json"
     spec_file.write_text('{"steps": []}', encoding="utf-8")
 
-    main(["run", "--spec", str(spec_file), "--allow-tools"])
-
+    # 1) Default should be allow_tools=True
+    main(["run", "--spec", str(spec_file)])
     assert len(calls) == 1
     assert calls[0].get("allow_tools") is True
+
+    # 2) --deny-tools should set allow_tools=False
+    calls.clear()
+    main(["run", "--spec", str(spec_file), "--deny-tools"])
+    assert len(calls) == 1
+    assert calls[0].get("allow_tools") is False

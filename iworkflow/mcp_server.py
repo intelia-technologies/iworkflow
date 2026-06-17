@@ -219,7 +219,7 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
                        caps: dict[str, int] | None = None,
                        catalog_root: str | None = None,
                        journal_dir: str = ".iworkflow",
-                       allow_tools: bool = False) -> dict[str, Any]:
+                       allow_tools: bool = True) -> dict[str, Any]:
     """Run a subscription-only multi-agent workflow. Three ways to drive it:
 
     - `spec=`     : a declarative workflow spec (define your own — DYNAMIC door).
@@ -256,7 +256,7 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
                          caps: dict[str, int] | None = None,
                          catalog_root: str | None = None,
                          journal_dir: str = ".iworkflow",
-                         allow_tools: bool = False) -> dict[str, Any]:
+                         allow_tools: bool = True) -> dict[str, Any]:
     """Start a workflow in the background; poll/stream with run_id."""
     rid = _resolve_run_id(run_id, goal, params)
     existing = _jobs.get(rid)
@@ -384,7 +384,7 @@ def main() -> None:
         caps: dict[str, int] | None = None,
         catalog_root: str | None = None,
         journal_dir: str = ".iworkflow",
-        allow_tools: bool = False,
+        allow_tools: bool = True,
     ) -> dict[str, Any]:
         """Start a long-running workflow without blocking the MCP client.
 
@@ -441,7 +441,7 @@ def main() -> None:
         caps: dict[str, int] | None = None,
         catalog_root: str | None = None,
         journal_dir: str = ".iworkflow",
-        allow_tools: bool = False,
+        allow_tools: bool = True,
     ) -> dict[str, Any]:
         return await run_workflow(
             goal, workflow=workflow, params=params, spec=spec, run_id=run_id,

@@ -208,7 +208,7 @@ def _cmd_workflows(recipe_dir: str | None) -> None:
 def _cmd_run(name: str | None, goal: str | None, params_json: str | None,
              spec_path: str | None, run_id: str, recipe_dir: str | None,
              cwd: str | None, timeout_s: float, caps_json: str | None,
-             journal_dir: str, allow_tools: bool = False) -> None:
+             journal_dir: str, allow_tools: bool = True) -> None:
     import asyncio
 
     from .mcp_server import run_workflow
@@ -363,7 +363,7 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("--timeout", type=float, default=180, help="per-provider timeout (seconds)")
     p_run.add_argument("--caps", default=None, help='JSON caps object, e.g. {"codex":2}')
     p_run.add_argument("--journal-dir", default=".iworkflow")
-    p_run.add_argument("--allow-tools", action="store_true", help="allow agents to use custom tools/MCPs")
+    p_run.add_argument("--deny-tools", dest="allow_tools", action="store_false", default=True, help="disable tool/MCP injection for this run")
 
     p_stats = sub.add_parser("stats", help="show telemetry from past runs (the logs)")
     p_stats.add_argument("--journal-dir", default=".iworkflow")
