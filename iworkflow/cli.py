@@ -317,6 +317,15 @@ def _cmd_graph(name: str | None, spec_path: str | None, html_path: str | None,
         except Exception:
             pass
 
+def _cmd_sessions(providers: list[str] | None, timeout: float, as_json: bool) -> None:
+    from .sessions import format_sessions_text, probe_sessions
+
+    report = probe_sessions(providers, timeout_s=timeout)
+    if as_json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print(format_sessions_text(report))
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="iworkflow",
@@ -366,6 +375,14 @@ def main(argv: list[str] | None = None) -> None:
     p_graph.add_argument("--mermaid", action="store_true", help="print raw Mermaid to stdout instead of generating HTML (may break terminals that auto-render mermaid)")
     p_graph.add_argument("--recipe-dir", default=None, help="extra recipe directory")
 
+    p_sess = sub.add_parser("sessions", help="check which subscription CLIs are logged in")
+    p_sess.add_argument(
+        "providers", nargs="*", default=None,
+        help="subset: codex claude gemini cursor cursor_flash (default: all)",
+    )
+    p_sess.add_argument("--timeout", type=float, default=12.0, help="per-probe timeout (seconds)")
+    p_sess.add_argument("--json", action="store_true", help="emit JSON report")
+
     args = parser.parse_args(argv)
     if args.cmd == "serve":
         from .mcp_server import main as serve
@@ -384,6 +401,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_stats(args.journal_dir, args.run_id)
     elif args.cmd == "graph":
         _cmd_graph(args.name, args.spec, args.html, args.publish, args.recipe_dir, args.mermaid)
+    elif args.cmd == "sessions":
+        _cmd_sessions(args.providers, args.timeout, args.json)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import asyncio
 import json
 
 from iworkflow.mcp_server import (
+    check_sessions,
     SYNC_WORKFLOW_DOC,
     _maybe_degrade_fan_synthesize,
     _read_events_since,
@@ -150,3 +151,12 @@ def test_sync_workflow_doc_mentions_start_and_stream():
     assert "iworkflow_workflow_start" in SYNC_WORKFLOW_DOC
     assert "iworkflow_workflow_stream" in SYNC_WORKFLOW_DOC
     assert "DEPRECATED" in SYNC_WORKFLOW_DOC
+
+
+def test_check_sessions_delegates(monkeypatch):
+    monkeypatch.setattr(
+        "iworkflow.sessions.probe_sessions",
+        lambda providers, timeout_s=12.0: {"ready": ["codex"], "sessions": []},
+    )
+    out = check_sessions(["codex"])
+    assert out["ready"] == ["codex"]

@@ -32,7 +32,7 @@ from .providers import ClaudeInteractiveProvider, CodexProvider, CursorProvider,
 from .recipes import get_recipe, list_recipes
 from .scheduler import Runner
 from .toolsets import ToolCatalog
-from .workflow import run_spec
+from .workflow import run_spec, Limits
 
 # In-process job registry for start/poll (MCP clients with short tool timeouts).
 _jobs: dict[str, asyncio.Task] = {}
@@ -218,7 +218,8 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
                        timeout_s: float = 180,
                        caps: dict[str, int] | None = None,
                        catalog_root: str | None = None,
-                       journal_dir: str = ".iworkflow") -> dict[str, Any]:
+                       journal_dir: str = ".iworkflow",
+                       allow_tools: bool = False) -> dict[str, Any]:
     """Run a subscription-only multi-agent workflow. Three ways to drive it:
 
     - `spec=`     : a declarative workflow spec (define your own — DYNAMIC door).
@@ -233,14 +234,13 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
         catalog=_resolve_catalog(catalog_root, cwd),
         journal_dir=journal_dir,
     )
+    limits = Limits(allow_tools=allow_tools)
     if spec is not None:
-        result = await run_spec(r, spec, params)
+        result = await run_spec(r, spec, params, limits=limits)
     elif workflow is not None:
-        result = await run_spec(r, get_recipe(workflow, recipe_dir), params)
+        result = await run_spec(r, get_recipe(workflow, recipe_dir), params, limits=limits)
     elif goal is not None:
-        result = await run_spec(r, get_recipe("fan_synthesize", recipe_dir), {"goal": goal})
-    else:
-        raise ValueError("provide one of: spec, workflow, or goal")
+        result = await run_spec(r, get_recipe("fan_synthesize", recipe_dir), {"goal": goal}, limits=limits)
     result = _maybe_degrade_fan_synthesize(result)
     result["run_id"] = rid
     return result
@@ -255,7 +255,8 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
                          timeout_s: float = 180,
                          caps: dict[str, int] | None = None,
                          catalog_root: str | None = None,
-                         journal_dir: str = ".iworkflow") -> dict[str, Any]:
+                         journal_dir: str = ".iworkflow",
+                         allow_tools: bool = False) -> dict[str, Any]:
     """Start a workflow in the background; poll/stream with run_id."""
     rid = _resolve_run_id(run_id, goal, params)
     existing = _jobs.get(rid)
@@ -267,6 +268,7 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
             goal, workflow=workflow, params=params, spec=spec, run_id=rid,
             recipe_dir=recipe_dir, runner=runner, cwd=cwd, timeout_s=timeout_s,
             caps=caps, catalog_root=catalog_root, journal_dir=journal_dir,
+            allow_tools=allow_tools,
         )
 
     task = asyncio.create_task(_work())
@@ -341,6 +343,16 @@ async def workflow_stream(
     return payload
 
 
+
+def check_sessions(
+    providers: list[str] | None = None,
+    timeout_s: float = 12.0,
+) -> dict[str, Any]:
+    """Probe subscription CLI login state for workflow workers."""
+    from .sessions import probe_sessions
+
+    return probe_sessions(providers, timeout_s=timeout_s)
+
 def main() -> None:
     from mcp.server.fastmcp import FastMCP
 
@@ -372,6 +384,7 @@ def main() -> None:
         caps: dict[str, int] | None = None,
         catalog_root: str | None = None,
         journal_dir: str = ".iworkflow",
+        allow_tools: bool = False,
     ) -> dict[str, Any]:
         """Start a long-running workflow without blocking the MCP client.
 
@@ -386,6 +399,7 @@ def main() -> None:
             goal, workflow=workflow, params=params, spec=spec, run_id=run_id,
             recipe_dir=recipe_dir, cwd=cwd, timeout_s=timeout_s, caps=caps,
             catalog_root=catalog_root, journal_dir=journal_dir,
+            allow_tools=allow_tools,
         )
 
     @server.tool()
@@ -427,15 +441,28 @@ def main() -> None:
         caps: dict[str, int] | None = None,
         catalog_root: str | None = None,
         journal_dir: str = ".iworkflow",
+        allow_tools: bool = False,
     ) -> dict[str, Any]:
         return await run_workflow(
             goal, workflow=workflow, params=params, spec=spec, run_id=run_id,
             recipe_dir=recipe_dir, cwd=cwd, timeout_s=timeout_s, caps=caps,
             catalog_root=catalog_root, journal_dir=journal_dir,
+            allow_tools=allow_tools,
         )
 
     # Attach deprecation doc to the sync tool (FastMCP uses __doc__ for schema).
     iworkflow_workflow.__doc__ = SYNC_WORKFLOW_DOC
+
+    @server.tool()
+    def iworkflow_sessions(
+        providers: list[str] | None = None,
+        timeout_s: float = 12.0,
+    ) -> dict[str, Any]:
+        """Check which subscription CLIs are logged in (codex, claude, gemini, cursor).
+
+        Run before dispatching work to avoid silent failures. Optional `providers`
+        subset: codex, claude, gemini, cursor, cursor_flash."""
+        return check_sessions(providers, timeout_s=timeout_s)
 
     server.run()
 
