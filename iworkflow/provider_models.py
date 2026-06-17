@@ -81,17 +81,17 @@ PROVIDER_MODELS: dict[str, dict[str, Any]] = {
                 "aliases": ["composer", "2.5"],
                 "notes": "Repo-aware codegen and review",
             },
-            "composer-2.5-flash": {
-                "label": "Composer 2.5 Flash",
-                "aliases": ["flash", "composer-flash", "2.5-flash"],
-                "notes": "Fast fan-out / classify",
+            "composer-2.5-fast": {
+                "label": "Composer 2.5 Fast",
+                "aliases": ["flash", "composer-flash", "2.5-fast", "composer-2.5-flash"],
+                "notes": "Fast fan-out / classify (cursor-agent default)",
             },
         },
     },
 }
 
 LEGACY_PROVIDER_ALIASES: dict[str, tuple[str, str | None]] = {
-    "cursor_flash": ("cursor", "composer-2.5-flash"),
+    "cursor_flash": ("cursor", "composer-2.5-fast"),
 }
 
 RoutingTarget = tuple[str, str | None]

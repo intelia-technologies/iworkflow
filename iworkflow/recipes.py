@@ -56,12 +56,13 @@ FAN_SYNTHESIZE: dict[str, Any] = {
     "params": {"goal": None},
     "steps": [
         {"id": "fan", "kind": "parallel", "agents": [
-            {"id": "eng", "prefer": ["codex", "gemini"],
+            {"id": "eng", "prefer": ["cursor:flash", "codex", "gemini"],
              "prompt": "From an engineering angle, answer concisely: {{params.goal}}"},
-            {"id": "dx", "prefer": ["gemini", "codex"],
+            {"id": "dx", "prefer": ["gemini", "cursor:flash", "codex"],
              "prompt": "From a product/UX angle, answer concisely: {{params.goal}}"},
         ]},
-        {"id": "synth", "kind": "agent", "needs": ["fan"], "prefer": ["codex", "gemini", "claude"],
+        {"id": "synth", "kind": "agent", "needs": ["fan"],
+         "prefer": ["cursor:composer-2.5", "codex", "gemini", "claude"],
          "prompt": "Synthesize ONE decisive answer to: {{params.goal}}\n"
                    "Inputs: {{steps.fan.value}}"},
     ],

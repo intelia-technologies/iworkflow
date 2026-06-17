@@ -81,9 +81,9 @@ KIND_ROUTES = {
 
 # Per kind, optional default model when a provider is auto-routed (vendor id → model id).
 KIND_MODEL_HINTS: dict[str, dict[str, str]] = {
-    "audit": {"cursor": "composer-2.5-flash"},
-    "classify": {"cursor": "composer-2.5-flash", "gemini": "Gemini 3.5 Flash (Medium)"},
-    "default": {"cursor": "composer-2.5-flash"},
+    "audit": {"cursor": "composer-2.5-fast"},
+    "classify": {"cursor": "composer-2.5-fast", "gemini": "Gemini 3.5 Flash (Medium)"},
+    "default": {"cursor": "composer-2.5-fast"},
     "implement": {"cursor": "composer-2.5"},
     "review": {"cursor": "composer-2.5"},
 }

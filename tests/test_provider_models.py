@@ -8,13 +8,13 @@ from iworkflow.provider_models import (
 def test_cursor_flash_legacy_alias():
     prov, model = parse_prefer_entry("cursor_flash")
     assert prov == "cursor"
-    assert model == "composer-2.5-flash"
+    assert model == "composer-2.5-fast"
 
 
 def test_prefer_colon_syntax():
     prov, model = parse_prefer_entry("cursor:flash")
     assert prov == "cursor"
-    assert model == "composer-2.5-flash"
+    assert model == "composer-2.5-fast"
 
 
 def test_prefer_object_syntax():
@@ -28,7 +28,7 @@ def test_parse_prefer_list_with_models_map():
         ["codex", "cursor"],
         models={"cursor": "flash"},
     )
-    assert targets == [("codex", None), ("cursor", "composer-2.5-flash")]
+    assert targets == [("codex", None), ("cursor", "composer-2.5-fast")]
 
 
 def test_resolve_model_gemini_alias():
@@ -45,4 +45,4 @@ def test_classify_route_uses_flash_hint():
         available=["cursor", "gemini", "codex"],
     )
     assert why == "inferred=classify"
-    assert order[0] == ("cursor", "composer-2.5-flash")
+    assert order[0] == ("cursor", "composer-2.5-fast")

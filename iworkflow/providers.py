@@ -349,9 +349,10 @@ class GeminiProvider(Provider):
 
 CURSOR_MODEL_ALIASES: dict[str, str] = {
     "composer-2.5": "composer-2.5",
-    "composer-2.5-flash": "composer-2.5-flash",
+    "composer-2.5-fast": "composer-2.5-fast",
+    "composer-2.5-flash": "composer-2.5-fast",  # legacy
     "composer": "composer-2.5",
-    "flash": "composer-2.5-flash",
+    "flash": "composer-2.5-fast",
 }
 _CURSOR_AUTH_MARKERS = (
     "press any key to sign in",
@@ -377,64 +378,13 @@ def _cursor_auth_required(combined: str) -> bool:
     return False
 
 
-def _parse_cursor_json(stdout: str) -> tuple[str, dict[str, Any] | None]:
-    """Return (answer text, optional result envelope) from cursor-agent JSON output."""
-    text = stdout.strip()
-    if not text:
-        raise ProviderError("cursor-agent returned empty output")
-
-    events: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            events.append(obj)
-
-    if not events:
-        try:
-            obj = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ProviderError(f"cursor-agent output is not JSON: {text[:200]}") from exc
-        if not isinstance(obj, dict):
-            raise ProviderError("cursor-agent JSON payload was not an object")
-        events = [obj]
-
-    for event in reversed(events):
-        if event.get("type") == "result":
-            if event.get("is_error"):
-                detail = event.get("result") or event.get("error") or "cursor-agent error"
-                raise ProviderError(str(detail)[:400])
-            answer = event.get("result")
-            if isinstance(answer, str) and answer.strip():
-                return answer.strip(), event
-            if answer is not None:
-                return json.dumps(answer), event
-
-    for event in reversed(events):
-        msg = event.get("message")
-        if isinstance(msg, dict):
-            content = msg.get("content")
-            if isinstance(content, list):
-                parts = [c.get("text", "") for c in content if isinstance(c, dict)]
-                joined = "".join(parts).strip()
-                if joined:
-                    return joined, event
-
-    raise ProviderError("cursor-agent JSON had no result text")
-
-
 @dataclass
 class CursorProvider(Provider):
     """Drive Cursor Agent CLI (`cursor-agent`) on the user's Cursor subscription.
 
-    Uses `--print --output-format json` (single final envelope) instead of
-    stream-json so workers do not hang waiting for the first stream event when
-    the CLI is not logged in.
+    Uses plain `--print` text mode (the default). `--output-format json` and
+    wrapping in `script -q /dev/null` were both observed to hang cursor-agent in
+    headless runs; the bare text invocation matches what works on a real TTY.
     """
 
     binary: str = field(
@@ -466,9 +416,17 @@ class CursorProvider(Provider):
         else:
             full += _SENTINEL_INSTRUCTION
 
-        argv = [self.binary, "-p", "--output-format", "json", "--model", resolved]
+        # Plain `--print` text mode (default). Adding `--output-format json` or
+        # wrapping in `script -q /dev/null` made cursor-agent hang in headless
+        # contexts; the bare invocation below matches what works on a real TTY.
+        # `--yolo` skips tool-approval prompts, `--trust` skips the workspace
+        # trust prompt — both required so a non-interactive run cannot block.
+        argv = [self.binary, "-p", "--model", resolved]
         if self.use_force:
-            argv.append("-f")
+            argv.append("--yolo")
+        argv.append("--trust")
+        if cwd:
+            argv.extend(["--workspace", cwd])
         argv.append(full)
 
         code, stdout, stderr = await self._exec(argv, "", cwd=cwd)
@@ -479,13 +437,14 @@ class CursorProvider(Provider):
             )
         self._classify(code, combined)
 
-        answer, envelope = _parse_cursor_json(stdout)
-        duration_ms = envelope.get("duration_ms") if envelope else None
+        answer = stdout.strip()
+        if not answer:
+            raise ProviderError("cursor-agent returned empty output")
         self.last_usage = {
             "input_tokens": None,
             "output_tokens": None,
             "cost_usd": None,
-            "duration_ms": duration_ms,
+            "duration_ms": None,
             "model": resolved,
         }
 
@@ -505,7 +464,7 @@ class CursorProvider(Provider):
         extracted = _extract_sentinel(answer)
         if extracted is not None:
             return extracted
-        return answer.strip()
+        return answer
 
 
 @dataclass
