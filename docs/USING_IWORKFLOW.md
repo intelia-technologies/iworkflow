@@ -56,20 +56,45 @@ An agent reaches this by running the commands through its shell/Bash tool; it mu
 
 ### B) MCP — an agent as a registered tool
 The narrowest, smoothest surface for an agent that should compose iworkflow into its
-own reasoning. `iworkflow register` once, then three tools appear:
+own reasoning. `iworkflow register` once, then these tools appear:
 
 - `iworkflow_ping()` — liveness.
-- `iworkflow_list_workflows()` — the recipes (name, description, params).
-- `iworkflow_workflow(goal? | workflow?+params? | spec?, run_id?)` — **run a workflow.**
-  Pass **exactly one** driver:
+- `iworkflow_list_workflows(recipe_dir?)` — recipes (built-in + host dir).
+- `iworkflow_workflow_start(goal? | workflow?+params? | spec?, …)` — **start** a
+  workflow without blocking. Returns `{run_id, status: "started"}`.
+- `iworkflow_workflow_stream(run_id, after=0, block_s=5)` — **incremental progress**
+  from `events.jsonl` (SSE-like long-poll). Use returned `next_after` as cursor.
+- `iworkflow_workflow_poll(run_id)` — snapshot poll (status + tail of events).
+- `iworkflow_workflow(…)` — **sync / blocking** run. **Deprecated for long runs**
+  (>~30s MCP timeout). Prefer `start` + `stream`/`poll`.
+
+Shared optional params on start/sync tools:
+- `cwd` — working directory for provider CLIs (workers see this repo).
+- `caps` — per-provider concurrency, e.g. `{"codex": 2, "gemini": 2}`.
+- `catalog_root` — load MCP/skills/commands from a repo (same discovery as CLI
+  `iworkflow catalog`).
+- `recipe_dir` — host recipes under `.iworkflow/recipes` or a custom path.
+- `journal_dir` — where `.iworkflow/runs/<run_id>/` is written (default `.iworkflow`).
+
+Pass **exactly one** driver to start/sync:
   - `spec={...}` — your own dynamic workflow (the DYNAMIC door).
   - `workflow="<name>"` + `params={...}` — a predefined recipe.
   - `goal="<question>"` — sugar for `fan_synthesize` over one question.
 
-The result returns as a **structured tool result** (no stdout parsing), and the tool
-is **discoverable** in the agent's tool list. MCP intentionally omits `stats`/`catalog`
-and can't widen `Limits` — a thinner, safer surface than the CLI.
+**Long-run pattern (recommended):**
+```
+start = iworkflow_workflow_start(goal="…", cwd="/path/to/repo")
+after = 0
+while True:
+  chunk = iworkflow_workflow_stream(start["run_id"], after=after, block_s=5)
+  after = chunk["next_after"]
+  # handle chunk["events"] …
+  if chunk["status"] in {"done", "error", "unknown_done"}:
+    break
+```
 
+The result returns as a **structured tool result** (no stdout parsing), and tools
+are **discoverable** in the agent's tool list.
 ### C) SDK — embedding, tests, custom providers, widening Limits
 ```python
 from iworkflow import Runner, run_spec, Limits, FakeProvider
@@ -80,14 +105,13 @@ The **only** door that can widen `Limits` (privileged sandbox, tool injection) o
 providers. This is what the test suite and `examples/` use.
 
 ### Which door (for an agent)
-- **MCP** when it's registered → structured I/O, discoverable, no shell-escaping of big
-  specs. The default for "this agent orchestrates iworkflow inline".
-- **CLI (Bash)** when you need what MCP doesn't expose (`stats`, `catalog`, explicit
-  `--run-id` control), **or there's no MCP host** (CI, a cron-agent, a script). The
-  universal fallback: if there's a shell, it works.
+- **MCP** when it's registered → structured I/O, discoverable, `start`+`stream` for
+  long runs. The default for "this agent orchestrates iworkflow inline".
+- **CLI (Bash)** when you need `stats`, `graph`, explicit `--run-id` control, or
+  there's no MCP host (CI, cron, scripts). The universal fallback.
 - **SDK** when embedding iworkflow in code, writing tests, or you must raise `Limits`.
-- They compose: an agent can launch over MCP and later inspect the same run with
-  `iworkflow stats` over Bash — the journal is shared.
+- They compose: launch over MCP, inspect the same run with `iworkflow stats` over Bash
+  — the journal is shared.
 
 The result of a run is a **bundle**:
 ```jsonc
