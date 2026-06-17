@@ -28,7 +28,7 @@ from typing import Any
 
 from .catalog_loaders import load_project_catalog
 from .ledger import sha
-from .providers import ClaudeInteractiveProvider, CodexProvider, GeminiProvider
+from .providers import ClaudeInteractiveProvider, CodexProvider, CursorProvider, GeminiProvider
 from .recipes import get_recipe, list_recipes
 from .scheduler import Runner
 from .toolsets import ToolCatalog
@@ -81,11 +81,15 @@ def _default_runner(
     catalog: ToolCatalog | None = None,
     journal_dir: str = ".iworkflow",
 ) -> Runner:
-    caps = caps or {"codex": 2, "gemini": 2, "claude": 1}
+    caps = caps or {"codex": 2, "gemini": 2, "claude": 1, "cursor": 2, "cursor_flash": 2}
     providers = {
         "codex": CodexProvider("codex", timeout_s=timeout_s),
         "gemini": GeminiProvider("gemini", timeout_s=timeout_s),
         "claude": ClaudeInteractiveProvider("claude", timeout_s=timeout_s),
+        "cursor": CursorProvider("cursor", model="composer-2.5", timeout_s=timeout_s),
+        "cursor_flash": CursorProvider(
+            "cursor_flash", model="composer-2.5-flash", timeout_s=timeout_s,
+        ),
     }
     return Runner(
         run_id,

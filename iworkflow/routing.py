@@ -46,6 +46,26 @@ CAPABILITIES = {
         "billing": "subscription Pool 1 — SHARED WEEKLY LIMIT, scarce",
         "scarcity": "high — reserve for delicate / high-value work",
     },
+    "cursor": {
+        "model": "Composer 2.5 (cursor-agent CLI, Cursor subscription)",
+        "great_at": ["repo-aware codegen", "fast implementation", "tool use",
+                     "review in project context"],
+        "weak_at": ["native structured output (none)", "headless without login"],
+        "structured_output": "none (JSON-block fallback)",
+        "context": "large",
+        "billing": "Cursor subscription",
+        "scarcity": "medium",
+    },
+    "cursor_flash": {
+        "model": "Composer 2.5 Flash (cursor-agent CLI, Cursor subscription)",
+        "great_at": ["cheap fan-out", "classification", "quick reviews",
+                     "high-throughput proposals"],
+        "weak_at": ["native structured output (none)", "delicate architecture"],
+        "structured_output": "none (JSON-block fallback)",
+        "context": "large",
+        "billing": "Cursor subscription",
+        "scarcity": "low",
+    },
 }
 
 # --- Task-kind → ordered provider preference -----------------------------
@@ -53,15 +73,15 @@ CAPABILITIES = {
 # OUT of bulk fan-out (structured/classify/review/audit go to Codex/Gemini).
 KIND_ROUTES = {
     # capability kinds
-    "implement":  ["codex", "claude", "gemini"],   # codegen → codex; delicate → claude
-    "structured": ["codex", "gemini", "claude"],   # native schema → codex
-    "review":     ["codex", "gemini"],
-    "audit":      ["gemini", "codex"],             # independent, schema-less → gemini
-    "sweep":      ["gemini", "claude"],            # huge context → gemini's 1M
-    "classify":   ["gemini", "codex"],             # cheap / fast
-    "reason":     ["claude", "codex"],             # delicate judgment → worth Claude
-    "write":      ["claude", "gemini"],            # prose → Claude
-    "default":    ["codex", "gemini"],             # cheap, abundant, capable
+    "implement":  ["codex", "cursor", "claude", "gemini"],   # codegen → codex; delicate → claude
+    "structured": ["codex", "gemini", "cursor", "claude"],   # native schema → codex
+    "review":     ["codex", "cursor", "gemini"],
+    "audit":      ["gemini", "codex", "cursor_flash"],             # independent, schema-less → gemini
+    "sweep":      ["gemini", "claude", "cursor"],            # huge context → gemini's 1M
+    "classify":   ["cursor_flash", "gemini", "codex"],             # cheap / fast
+    "reason":     ["claude", "cursor", "codex"],             # delicate judgment → worth Claude
+    "write":      ["claude", "cursor", "gemini"],            # prose → Claude
+    "default":    ["codex", "cursor_flash", "gemini"],             # cheap, abundant, capable
     # legacy role aliases (back-compat with existing workflows)
     "doer":       ["codex", "gemini"],
     "core":       ["claude", "codex"],

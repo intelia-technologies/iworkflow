@@ -1,7 +1,7 @@
 """Provider adapters — each spawns a SUBSCRIPTION CLI as a worker.
 
 The hard rule of this design: a worker is the CLI itself (`codex exec`,
-`claude -p`, `agy -p`), authenticated with the user's subscription. We never
+`claude -p`, `agy -p`, `cursor-agent -p`), authenticated with the user's subscription. We never
 call a paid provider API. Orchestration (scheduler.py) is deterministic Python,
 so coordination spends zero tokens.
 
@@ -9,6 +9,7 @@ Structured output is provider-aware:
   - Codex  : native  `codex exec --output-schema FILE -o OUT`
   - Claude : native  `claude -p --output-format json --json-schema FILE`
   - Gemini : none    `agy -p` → parse a fenced/marker JSON block (fallback)
+  - Cursor : none    `cursor-agent -p --output-format json` → JSON envelope / markers
 """
 
 from __future__ import annotations
@@ -337,6 +338,165 @@ class GeminiProvider(Provider):
         if not ok:
             raise ProviderError(f"schema mismatch: {why}")
         return payload
+
+
+CURSOR_MODEL_ALIASES: dict[str, str] = {
+    "composer-2.5": "composer-2.5",
+    "composer-2.5-flash": "composer-2.5-flash",
+    "composer": "composer-2.5",
+    "flash": "composer-2.5-flash",
+}
+_CURSOR_AUTH_MARKERS = (
+    "press any key to sign in",
+    "not logged in",
+    "cursor agent",
+)
+
+
+def _resolve_cursor_model(model: str | None, *, default: str = "composer-2.5") -> str:
+    if not model:
+        return default
+    return CURSOR_MODEL_ALIASES.get(model, model)
+
+
+def _cursor_auth_required(combined: str) -> bool:
+    low = combined.lower()
+    if "⏺" in combined or "<<<iwf>>>" in low:
+        return False
+    if any(marker in low for marker in _CURSOR_AUTH_MARKERS):
+        return True
+    if "sign in" in low and "cursor" in low:
+        return True
+    return False
+
+
+def _parse_cursor_json(stdout: str) -> tuple[str, dict[str, Any] | None]:
+    """Return (answer text, optional result envelope) from cursor-agent JSON output."""
+    text = stdout.strip()
+    if not text:
+        raise ProviderError("cursor-agent returned empty output")
+
+    events: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            events.append(obj)
+
+    if not events:
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ProviderError(f"cursor-agent output is not JSON: {text[:200]}") from exc
+        if not isinstance(obj, dict):
+            raise ProviderError("cursor-agent JSON payload was not an object")
+        events = [obj]
+
+    for event in reversed(events):
+        if event.get("type") == "result":
+            if event.get("is_error"):
+                detail = event.get("result") or event.get("error") or "cursor-agent error"
+                raise ProviderError(str(detail)[:400])
+            answer = event.get("result")
+            if isinstance(answer, str) and answer.strip():
+                return answer.strip(), event
+            if answer is not None:
+                return json.dumps(answer), event
+
+    for event in reversed(events):
+        msg = event.get("message")
+        if isinstance(msg, dict):
+            content = msg.get("content")
+            if isinstance(content, list):
+                parts = [c.get("text", "") for c in content if isinstance(c, dict)]
+                joined = "".join(parts).strip()
+                if joined:
+                    return joined, event
+
+    raise ProviderError("cursor-agent JSON had no result text")
+
+
+@dataclass
+class CursorProvider(Provider):
+    """Drive Cursor Agent CLI (`cursor-agent`) on the user's Cursor subscription.
+
+    Uses `--print --output-format json` (single final envelope) instead of
+    stream-json so workers do not hang waiting for the first stream event when
+    the CLI is not logged in.
+    """
+
+    binary: str = field(
+        default_factory=lambda: os.environ.get("IWORKFLOW_CURSOR_BIN", "cursor-agent"),
+    )
+    supports_schema: bool = False
+    use_force: bool = True
+    default_model: str = "composer-2.5"
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, Any] | None,
+        sandbox: str = "read-only",
+        cwd: str | None = None,
+        toolset: ToolSet | None = None,
+    ) -> Any:
+        self.last_usage: dict[str, Any] | None = None
+        model = _resolve_cursor_model(self.model, default=self.default_model)
+        full = _prompt_with_toolset(prompt, toolset)
+        if schema:
+            full += (
+                "\n\nReturn ONLY a JSON object matching this schema, "
+                "wrapped in ```json ... ```:\n" + json.dumps(schema)
+            )
+        else:
+            full += _SENTINEL_INSTRUCTION
+
+        argv = [self.binary, "-p", "--output-format", "json", "--model", model]
+        if self.use_force:
+            argv.append("-f")
+        argv.append(full)
+
+        code, stdout, stderr = await self._exec(argv, "", cwd=cwd)
+        combined = stdout + "\n" + stderr
+        if _cursor_auth_required(combined):
+            raise ProviderError(
+                "cursor-agent not logged in — run: cursor-agent login",
+            )
+        self._classify(code, combined)
+
+        answer, envelope = _parse_cursor_json(stdout)
+        duration_ms = envelope.get("duration_ms") if envelope else None
+        self.last_usage = {
+            "input_tokens": None,
+            "output_tokens": None,
+            "cost_usd": None,
+            "duration_ms": duration_ms,
+            "model": model,
+        }
+
+        if schema:
+            m = re.search(r"```json\s*(.*?)\s*```", answer, re.DOTALL)
+            if m:
+                payload = json.loads(m.group(1))
+            else:
+                payload = _find_schema_json(answer, schema)
+                if payload is None:
+                    raise ProviderError("no JSON block in cursor-agent output")
+            ok, why = validate(payload, schema)
+            if not ok:
+                raise ProviderError(f"schema mismatch: {why}")
+            return payload
+
+        extracted = _extract_sentinel(answer)
+        if extracted is not None:
+            return extracted
+        return answer.strip()
 
 
 @dataclass

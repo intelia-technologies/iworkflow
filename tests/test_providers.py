@@ -160,3 +160,70 @@ def test_response_text_prefers_sentinel_markers():
     """
 
     assert _response_text(pane) == "clean answer"
+
+
+
+def test_resolve_cursor_model_aliases():
+    from iworkflow.providers import _resolve_cursor_model
+
+    assert _resolve_cursor_model(None) == "composer-2.5"
+    assert _resolve_cursor_model("flash") == "composer-2.5-flash"
+    assert _resolve_cursor_model("custom-model") == "custom-model"
+
+
+def test_cursor_auth_required_detects_login_prompt():
+    from iworkflow.providers import _cursor_auth_required
+
+    assert _cursor_auth_required("Press any key to sign in\nCursor Agent")
+    assert not _cursor_auth_required('{"type":"result","result":"ok"}')
+
+
+def test_parse_cursor_json_reads_result_envelope():
+    from iworkflow.providers import _parse_cursor_json
+
+    stdout = '{"type":"result","subtype":"success","is_error":false,"result":"hello"}'
+    answer, envelope = _parse_cursor_json(stdout)
+    assert answer == "hello"
+    assert envelope["subtype"] == "success"
+
+
+def test_cursor_provider_run_parses_json(monkeypatch):
+    import json
+    from iworkflow.providers import CursorProvider
+
+    provider = CursorProvider("cursor", model="composer-2.5", timeout_s=5)
+
+    async def fake_exec(argv, stdin, cwd=None):
+        assert argv[:6] == [
+            "cursor-agent", "-p", "--output-format", "json", "--model", "composer-2.5",
+        ]
+        assert argv[-2] == "-f"
+        assert "Wrap your entire answer" in argv[-1]
+        payload = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "<<<IWF>>>\nfrom cursor\n<<<END>>>",
+            "duration_ms": 42,
+        }
+        return 0, json.dumps(payload), ""
+
+    monkeypatch.setattr(provider, "_exec", fake_exec)
+    result = asyncio.run(
+        provider.run("say hi", schema=None, sandbox="read-only"),
+    )
+    assert result == "from cursor"
+    assert provider.last_usage["model"] == "composer-2.5"
+
+
+def test_cursor_provider_requires_login(monkeypatch):
+    from iworkflow.providers import CursorProvider
+
+    provider = CursorProvider("cursor", timeout_s=5)
+
+    async def fake_exec(argv, stdin, cwd=None):
+        return 1, "Press any key to sign in", "Cursor Agent"
+
+    monkeypatch.setattr(provider, "_exec", fake_exec)
+    with pytest.raises(ProviderError, match="not logged in"):
+        asyncio.run(provider.run("say hi", schema=None))
