@@ -126,3 +126,37 @@ def test_response_text_strips_marker_and_tui_chrome():
     """
 
     assert _response_text(pane) == "Useful result\nsecond line"
+
+
+def test_iter_json_objects_finds_nested_balanced_object():
+    from iworkflow.providers import _iter_json_objects
+
+    text = 'noise {"verdict":"DONE","summary":"x","meta":{"depth":2}} tail'
+    assert list(_iter_json_objects(text)) == [{
+        "verdict": "DONE",
+        "summary": "x",
+        "meta": {"depth": 2},
+    }]
+
+
+def test_response_text_rejects_plan_approval_chrome():
+    pane = """
+    ⏺
+    Here is Claude's plan
+    Would you like to proceed?
+    shift+tab to approve
+    """
+
+    with pytest.raises(ProviderError, match="plan-approval chrome"):
+        _response_text(pane)
+
+
+def test_response_text_prefers_sentinel_markers():
+    pane = """
+    clutter
+    <<<IWF>>>
+    clean answer
+    <<<END>>>
+    """
+
+    assert _response_text(pane) == "clean answer"

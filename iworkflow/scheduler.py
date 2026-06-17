@@ -45,6 +45,7 @@ class AgentResult:
     value: Any
     attempts: list[Attempt] = field(default_factory=list)
     resumed: bool = False
+    prompt_sha: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -60,10 +61,12 @@ class Runner:
     def __init__(self, run_id: str, providers: dict[str, Provider],
                  caps: dict[str, int], journal_dir: str = ".iworkflow",
                  cooldown_s: float = 0.0, learn: bool = False,
-                 catalog: ToolCatalog | None = None):
+                 catalog: ToolCatalog | None = None,
+                 default_cwd: str | None = None):
         self.run_id = run_id
         self.providers = providers
         self.catalog = catalog
+        self.default_cwd = default_cwd
         self.sems = {name: asyncio.Semaphore(caps.get(name, 2)) for name in providers}
         self.caps = caps
         self.cooldown_s = cooldown_s   # >0: skip a provider for this long after it throttles
@@ -83,7 +86,8 @@ class Runner:
     # --- resume (durable ledger, see ledger.py) --------------------------
     def _load_done(self) -> dict[str, AgentResult]:
         done = {label: AgentResult(label=label, status="DONE", provider=rec.get("provider"),
-                                   value=rec.get("value"), resumed=True)
+                                   value=rec.get("value"), resumed=True,
+                                   prompt_sha=rec.get("prompt_sha"))
                 for label, rec in self.ledger.load_done().items()}
         if done:
             log(f"resume: {len(done)} agent(s) recovered from ledger {self.ledger.path}")
@@ -114,11 +118,21 @@ class Runner:
                     cwd: str | None = None,
                     tools: list[str] | None = None,
                     auto_tools: int | None = None) -> AgentResult:
+        prompt_hash = sha(prompt)
         if label in self._done:
-            log(f"RESUMED  {label}  (cached, 0 tokens)")
-            self._emit(label, "resumed", provider=self._done[label].provider)
-            return replace(self._done[label], resumed=True)   # always flag cache hits
+            cached = self._done[label]
+            cached_sha = cached.prompt_sha
+            if cached_sha is not None and cached_sha != prompt_hash:
+                log(f"STALE    {label}  (prompt changed {cached_sha}→{prompt_hash}, re-run)")
+                self._emit(label, "cache_invalidated",
+                           old_sha=cached_sha, new_sha=prompt_hash)
+                del self._done[label]
+            else:
+                log(f"RESUMED  {label}  (cached, 0 tokens)")
+                self._emit(label, "resumed", provider=cached.provider)
+                return replace(cached, resumed=True)   # always flag cache hits
 
+        effective_cwd = cwd if cwd is not None else self.default_cwd
         t_start = time.time()
         # tool selection: explicit names/tags win; else auto-pick top-k by keyword
         # relevance to the prompt; else inject nothing (the lean default).
@@ -158,11 +172,11 @@ class Runner:
                 self._emit(label, "dispatch", provider=name)
                 try:
                     value = await prov.run(prompt, schema=use_schema,
-                                           sandbox=sandbox, cwd=cwd, toolset=toolset)
+                                           sandbox=sandbox, cwd=effective_cwd, toolset=toolset)
                     # read usage immediately (no await between → race-free in asyncio)
                     usage = getattr(prov, "last_usage", None) or {}
                     attempts.append(Attempt(name, "DONE"))
-                    res = AgentResult(label, "DONE", name, value, attempts)
+                    res = AgentResult(label, "DONE", name, value, attempts, prompt_sha=prompt_hash)
                     self._done[label] = res      # within-process dedup, not just cross-process
                     self._record(res, prompt=prompt, schema=schema, attempts=attempts,
                                  t_start=t_start, kind=why, tools=tool_names, usage=usage)

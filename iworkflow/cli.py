@@ -205,16 +205,29 @@ def _cmd_workflows(recipe_dir: str | None) -> None:
         print(f"  {'':16} params: {params}")
 
 
-def _cmd_run(name: str | None, params_json: str | None, spec_path: str | None,
-             run_id: str, recipe_dir: str | None) -> None:
+def _cmd_run(name: str | None, goal: str | None, params_json: str | None,
+             spec_path: str | None, run_id: str, recipe_dir: str | None,
+             cwd: str | None, timeout_s: float, caps_json: str | None,
+             journal_dir: str) -> None:
     import asyncio
 
     from .mcp_server import run_workflow
 
     params = json.loads(params_json) if params_json else None
     spec = json.loads(Path(spec_path).read_text(encoding="utf-8")) if spec_path else None
-    result = asyncio.run(run_workflow(workflow=name, params=params, spec=spec,
-                                      run_id=run_id, recipe_dir=recipe_dir))
+    caps = json.loads(caps_json) if caps_json else None
+    result = asyncio.run(run_workflow(
+        goal=goal,
+        workflow=name,
+        params=params,
+        spec=spec,
+        run_id=run_id,
+        recipe_dir=recipe_dir,
+        cwd=cwd,
+        timeout_s=timeout_s,
+        caps=caps,
+        journal_dir=journal_dir,
+    ))
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
 
@@ -232,6 +245,77 @@ def _cmd_catalog(root: str) -> None:
     if len(specs) > 40:
         print(f"  … and {len(specs) - 40} more")
 
+
+def _cmd_graph(name: str | None, spec_path: str | None, html_path: str | None,
+               publish: bool, recipe_dir: str | None, mermaid: bool = False) -> None:
+    import os
+    import subprocess
+    import sys
+    import tempfile
+    import webbrowser
+    from .recipes import get_recipe
+    from .graph import spec_to_mermaid, spec_to_html
+
+    if spec_path:
+        spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+    elif name:
+        try:
+            spec = get_recipe(name, recipe_dir)
+        except KeyError as e:
+            print(f"Error: {e}")
+            return
+    else:
+        print("Error: must specify either a recipe name or --spec <path>")
+        return
+
+    # Raw Mermaid to stdout is opt-in: terminals and agent TUIs that auto-render
+    # fenced ```mermaid blocks can hang or crash on cyclic (loop) or richly
+    # styled graphs, so the default emits a self-contained HTML file that
+    # mermaid.js renders in a browser instead.
+    if mermaid:
+        print("```mermaid")
+        print(spec_to_mermaid(spec))
+        print("```")
+        return
+
+    html_content = spec_to_html(spec)
+
+    if publish:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_html = Path(tmpdir) / "index.html"
+            tmp_html.write_text(html_content, encoding="utf-8")
+
+            cmd = f"[ -f ~/.zshrc.local ] && source ~/.zshrc.local; nosdrop '{tmpdir}' --expires-in 24h"
+            try:
+                res = subprocess.run(
+                    ["zsh", "-l", "-c", cmd],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                print(res.stdout.strip())
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                print(f"Failed to publish to nosdrop: {e}")
+                if isinstance(e, subprocess.CalledProcessError):
+                    print(e.stderr)
+
+    if html_path:
+        out_path = Path(html_path).resolve()
+        out_path.write_text(html_content, encoding="utf-8")
+        print(f"Generated HTML diagram: {out_path}")
+    elif not publish:
+        fd, tmp = tempfile.mkstemp(prefix="iworkflow-graph-", suffix=".html")
+        os.close(fd)
+        out_path = Path(tmp).resolve()
+        out_path.write_text(html_content, encoding="utf-8")
+        print(f"Generated HTML diagram: {out_path}")
+
+    # Always attempt to open the browser for any generated local file (unless only publishing)
+    if html_path or not publish:
+        try:
+            webbrowser.open(out_path.as_uri())
+        except Exception:
+            pass
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
@@ -258,16 +342,29 @@ def main(argv: list[str] | None = None) -> None:
     p_wf.add_argument("--recipe-dir", default=None,
                       help="extra dir of host *.json recipes (default .iworkflow/recipes)")
 
-    p_run = sub.add_parser("run", help="run a recipe by name or a --spec file")
-    p_run.add_argument("name", nargs="?", default=None, help="recipe name (omit if --spec)")
+    p_run = sub.add_parser("run", help="run a recipe by name, --goal, or a --spec file")
+    p_run.add_argument("name", nargs="?", default=None, help="recipe name (omit if --spec/--goal)")
+    p_run.add_argument("--goal", default=None, help="shorthand for fan_synthesize over a question")
     p_run.add_argument("--params", default=None, help="JSON params object")
     p_run.add_argument("--spec", default=None, help="path to a declarative workflow spec JSON")
     p_run.add_argument("--run-id", default="cli")
     p_run.add_argument("--recipe-dir", default=None)
+    p_run.add_argument("--cwd", default=None, help="working directory for provider CLIs")
+    p_run.add_argument("--timeout", type=float, default=180, help="per-provider timeout (seconds)")
+    p_run.add_argument("--caps", default=None, help='JSON caps object, e.g. {"codex":2}')
+    p_run.add_argument("--journal-dir", default=".iworkflow")
 
     p_stats = sub.add_parser("stats", help="show telemetry from past runs (the logs)")
     p_stats.add_argument("--journal-dir", default=".iworkflow")
     p_stats.add_argument("--run-id", default=None)
+
+    p_graph = sub.add_parser("graph", help="generate a visual diagram of a workflow (Mermaid or HTML)")
+    p_graph.add_argument("name", nargs="?", default=None, help="recipe name (omit if --spec)")
+    p_graph.add_argument("--spec", default=None, help="path to a declarative workflow spec JSON")
+    p_graph.add_argument("--html", default=None, help="output file path for HTML diagram")
+    p_graph.add_argument("--publish", action="store_true", help="publish the HTML diagram to a shareable URL via nosdrop")
+    p_graph.add_argument("--mermaid", action="store_true", help="print raw Mermaid to stdout instead of generating HTML (may break terminals that auto-render mermaid)")
+    p_graph.add_argument("--recipe-dir", default=None, help="extra recipe directory")
 
     args = parser.parse_args(argv)
     if args.cmd == "serve":
@@ -282,9 +379,11 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "workflows":
         _cmd_workflows(args.recipe_dir)
     elif args.cmd == "run":
-        _cmd_run(args.name, args.params, args.spec, args.run_id, args.recipe_dir)
+        _cmd_run(args.name, args.goal, args.params, args.spec, args.run_id, args.recipe_dir, args.cwd, args.timeout, args.caps, args.journal_dir)
     elif args.cmd == "stats":
         _cmd_stats(args.journal_dir, args.run_id)
+    elif args.cmd == "graph":
+        _cmd_graph(args.name, args.spec, args.html, args.publish, args.recipe_dir, args.mermaid)
 
 
 if __name__ == "__main__":

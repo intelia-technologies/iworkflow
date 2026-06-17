@@ -41,6 +41,46 @@ _LIMIT_PATTERNS = re.compile(
 )
 
 
+
+IWF_BEGIN = "<<<IWF>>>"
+IWF_END = "<<<END>>>"
+_SENTINEL_INSTRUCTION = (
+    f"\n\nWrap your entire answer between {IWF_BEGIN} and {IWF_END} "
+    "on their own lines. Nothing before or after those markers."
+)
+_PLAN_CHROME = re.compile(
+    r"would you like to proceed|shift\+tab to approve|here is claude'?s plan",
+    re.IGNORECASE,
+)
+
+
+def _iter_json_objects(text: str):
+    """Yield dict objects found via balanced-brace JSON scanning."""
+    decoder = json.JSONDecoder()
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            i += 1
+            continue
+        if isinstance(obj, dict):
+            yield obj
+        i = end if end > i else i + 1
+
+
+def _extract_sentinel(text: str) -> str | None:
+    m = re.search(
+        re.escape(IWF_BEGIN) + r"\s*(.*?)\s*" + re.escape(IWF_END),
+        text,
+        re.DOTALL,
+    )
+    return m.group(1).strip() if m else None
+
+
 def _prompt_with_toolset(prompt: str, toolset: ToolSet | None) -> str:
     if toolset is None or toolset.is_empty():
         return prompt
@@ -183,7 +223,8 @@ class CodexProvider(Provider):
             code, stdout, stderr = await self._exec(argv, full_prompt, cwd=cwd)
             self._classify(code, stdout + "\n" + stderr)
             self.last_usage = _parse_codex_usage(stdout)
-            answer = open(out_file).read()
+            with open(out_file, encoding="utf-8") as fh:
+                answer = fh.read()
             if schema:
                 payload = json.loads(answer or "{}")
                 ok, why = validate(payload, schema)
@@ -285,11 +326,13 @@ class GeminiProvider(Provider):
         self._classify(code, stdout + "\n" + stderr)
         if not schema:
             return stdout.strip()
-        m = re.search(r"```json\s*(\{.*?\})\s*```", stdout, re.DOTALL) or \
-            re.search(r"(\{.*\})", stdout, re.DOTALL)
-        if not m:
-            raise ProviderError("no JSON block in agy output")
-        payload = json.loads(m.group(1))
+        m = re.search(r"```json\s*(.*?)\s*```", stdout, re.DOTALL)
+        if m:
+            payload = json.loads(m.group(1))
+        else:
+            payload = _find_schema_json(stdout, schema)
+            if payload is None:
+                raise ProviderError("no JSON block in agy output")
         ok, why = validate(payload, schema)
         if not ok:
             raise ProviderError(f"schema mismatch: {why}")
@@ -342,17 +385,15 @@ class FakeProvider(Provider):
 
 def _find_schema_json(text: str, schema: dict | None) -> Any:
     """Find the last JSON object in pane text that satisfies the schema."""
-    for m in reversed(re.findall(r"\{[^{}]*\}", text.replace("\n", " "))):
-        try:
-            obj = json.loads(m)
-        except Exception:
-            continue
+    found = None
+    for obj in _iter_json_objects(text):
         if schema is None:
-            return obj
+            found = obj
+            continue
         ok, _ = validate(obj, schema)
         if ok:
-            return obj
-    return None
+            found = obj
+    return found
 
 
 @dataclass
@@ -369,7 +410,7 @@ class ClaudeInteractiveProvider(Provider):
     """
 
     supports_schema: bool = False
-    permission_mode: str = "plan"     # read-only-safe; use acceptEdits for real work
+    permission_mode: str | None = None  # None = omit (answer mode); plan for write tasks
     poll_s: float = 3.0
     _seq: int = field(default=0, init=False)
 
@@ -381,7 +422,7 @@ class ClaudeInteractiveProvider(Provider):
         return out.decode(errors="replace")
 
     async def _pane(self, session: str) -> str:
-        return await self._tmux("capture-pane", "-p", "-S", "-800", "-t", session)
+        return await self._tmux("capture-pane", "-p", "-S", "-3000", "-t", session)
 
     async def run(
         self,
@@ -398,12 +439,13 @@ class ClaudeInteractiveProvider(Provider):
         if schema:
             full += ("\n\nOutput ONLY one compact single-line JSON object matching "
                      "this schema — no code fences, no commentary:\n" + json.dumps(schema))
+        else:
+            full += _SENTINEL_INSTRUCTION
         await self._tmux("kill-session", "-t", session)
         try:
-            command = (
-                f"claude --strict-mcp-config --setting-sources user "
-                f"--permission-mode {self.permission_mode}"
-            )
+            command = "claude --strict-mcp-config --setting-sources user"
+            if self.permission_mode:
+                command += f" --permission-mode {self.permission_mode}"
             # tmux's native -c sets the session's start dir (robuster than `cd &&`)
             new_session = ["new-session", "-d", "-s", session, "-x", "300", "-y", "50"]
             if cwd:
@@ -446,6 +488,8 @@ class ClaudeInteractiveProvider(Provider):
                         if not ok:
                             raise ProviderError(f"schema mismatch: {why}")
                         return cand
+                elif _extract_sentinel(cur) is not None and stable >= 1:
+                    return _response_text(cur)
                 elif "⏺" in cur and stable >= 2:          # prose response has settled
                     return _response_text(cur)
             raise ProviderError("timed out waiting for interactive response")
@@ -454,7 +498,13 @@ class ClaudeInteractiveProvider(Provider):
 
 
 def _response_text(pane: str) -> str:
-    """Schema-less: text of the last `⏺` response block, minus TUI chrome."""
+    """Schema-less: sentinel-wrapped answer, else last `⏺` block minus TUI chrome."""
+    extracted = _extract_sentinel(pane)
+    if extracted is not None:
+        if _PLAN_CHROME.search(extracted):
+            raise ProviderError("interactive response is plan-approval chrome, not an answer")
+        return extracted
+
     if "⏺" in pane:
         tail = pane.rsplit("⏺", 1)[1]
     else:
@@ -465,4 +515,7 @@ def _response_text(pane: str) -> str:
         if not s or set(s) <= set("─—-") or s.startswith("❯") or "plan mode" in s:
             continue
         lines.append(s)
-    return "\n".join(lines).strip()
+    result = "\n".join(lines).strip()
+    if not result or _PLAN_CHROME.search(result):
+        raise ProviderError("interactive response is plan-approval chrome, not an answer")
+    return result

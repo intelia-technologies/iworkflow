@@ -213,3 +213,26 @@ def test_cross_runner_resume_uses_ledger_without_dispatch(tmp_path):
     assert [result.status for result in resumed] == ["DONE", "DONE", "DONE"]
     assert all(result.resumed for result in resumed)
     assert [result.value for result in resumed] == [result.value for result in seeded]
+
+
+def test_resume_invalidates_cache_when_prompt_changes(tmp_path):
+    run_id = "prompt-change"
+    provider = FakeProvider("codex")
+    runner = Runner(
+        run_id,
+        {"codex": provider},
+        {"codex": 2},
+        journal_dir=str(tmp_path),
+    )
+
+    async def run_once():
+        first = await runner.agent("answer A", label="same-label")
+        second = await runner.agent("answer B", label="same-label")
+        return first, second
+
+    first, second = asyncio.run(run_once())
+
+    assert first.value != second.value
+    assert provider._calls == 2
+    assert first.resumed is False
+    assert second.resumed is False

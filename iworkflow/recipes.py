@@ -61,7 +61,7 @@ FAN_SYNTHESIZE: dict[str, Any] = {
             {"id": "dx", "prefer": ["gemini", "codex"],
              "prompt": "From a product/UX angle, answer concisely: {{params.goal}}"},
         ]},
-        {"id": "synth", "kind": "agent", "needs": ["fan"], "prefer": ["codex", "claude"],
+        {"id": "synth", "kind": "agent", "needs": ["fan"], "prefer": ["codex", "gemini", "claude"],
          "prompt": "Synthesize ONE decisive answer to: {{params.goal}}\n"
                    "Inputs: {{steps.fan.value}}"},
     ],
