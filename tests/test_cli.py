@@ -195,3 +195,22 @@ def test_cmd_graph_html(tmp_path, monkeypatch):
     assert "<!DOCTYPE html>" in content
     assert "graph TD" in content
     assert "mermaid" in content
+
+
+def test_cli_run_forwards_allow_tools(monkeypatch, tmp_path):
+    calls = []
+
+    async def mock_run_workflow(*args, **kwargs):
+        calls.append(kwargs)
+        return {"status": "DONE"}
+
+    monkeypatch.setattr("iworkflow.mcp_server.run_workflow", mock_run_workflow)
+
+    from iworkflow.cli import main
+    spec_file = tmp_path / "dummy_spec.json"
+    spec_file.write_text('{"steps": []}', encoding="utf-8")
+
+    main(["run", "--spec", str(spec_file), "--allow-tools"])
+
+    assert len(calls) == 1
+    assert calls[0].get("allow_tools") is True
