@@ -46,6 +46,10 @@ iworkflow run --spec my_spec.json --params '{"q":"…"}' --run-id job1
 iworkflow stats --run-id job1             # telemetry from past runs
 iworkflow catalog                         # tools/skills discovered in the repo
 iworkflow register [--codex|--claude]     # wire the MCP server into this repo
+iworkflow graph review                     # write an HTML diagram to a temp file (+ open it) and print the path
+iworkflow graph review --mermaid           # print raw Mermaid to stdout (for piping/redirect)
+iworkflow graph review --html graph.html   # write the HTML diagram to a specific path
+iworkflow graph review --publish           # publish HTML diagram to shareable URL via nosdrop
 ```
 An agent reaches this by running the commands through its shell/Bash tool; it must
 **capture and parse stdout** (the bundle JSON; logs go to stderr).

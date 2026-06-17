@@ -1,0 +1,98 @@
+{
+  "name": "complex_system_migration",
+  "description": "An exhaustive multi-step system migration workflow demonstrating parallel proposal generation, per-module pipelined review/verification, a critic-critic loop for edge case fixes, and a final supervisor checkpoint.",
+  "params": {
+    "target_repo": "https://github.com/example/repo",
+    "components": ["auth-service", "billing-core", "gateway-api"],
+    "spec_details": "Migrate from REST to gRPC for performance improvement."
+  },
+  "steps": [
+    {
+      "id": "pre_check",
+      "kind": "agent",
+      "prefer": ["claude"],
+      "prompt": "Verify if the target repository {{params.target_repo}} is accessible and has all prerequisites configured. Output verdict=READY or BLOCKED."
+    },
+    {
+      "id": "parallel_proposers",
+      "kind": "parallel",
+      "needs": ["pre_check"],
+      "agents": [
+        {
+          "id": "codex_proposer",
+          "role": "coder",
+          "prefer": ["codex"],
+          "tools": ["Bash", "Read"],
+          "prompt": "Propose gRPC schemas for component {{params.spec_details}}."
+        },
+        {
+          "id": "gemini_critic",
+          "role": "auditor",
+          "prefer": ["gemini"],
+          "prompt": "Analyze edge-cases and protocol safety issues for gRPC migration."
+        },
+        {
+          "id": "claude_architect",
+          "role": "architect",
+          "prefer": ["claude"],
+          "prompt": "Draft architectural integration guide for REST-to-gRPC wrapper layers."
+        }
+      ]
+    },
+    {
+      "id": "analysis_pipeline",
+      "kind": "pipeline",
+      "needs": ["parallel_proposers"],
+      "items": "{{params.components}}",
+      "stages": [
+        {
+          "id": "stage_review",
+          "role": "reviewer",
+          "prefer": ["codex"],
+          "prompt": "Analyze compatibility of the component {{item}} with the proposed gRPC design from parallel_proposers."
+        },
+        {
+          "id": "stage_verify",
+          "role": "auditor",
+          "prefer": ["gemini"],
+          "prompt": "Verify the compat findings for {{item}}. Ensure backwards compatibility checks are clean."
+        }
+      ]
+    },
+    {
+      "id": "refinement_loop",
+      "kind": "loop",
+      "needs": ["analysis_pipeline"],
+      "max_iterations": 3,
+      "until": {
+        "agent": {
+          "prompt": "Inspect the fixes in loop.collected. Complete? verdict=STOP if all components pass security checks.",
+          "stop_when": "STOP",
+          "prefer": ["claude"]
+        }
+      },
+      "body": [
+        {
+          "id": "find_flaws",
+          "kind": "agent",
+          "prefer": ["gemini"],
+          "prompt": "Search for remaining bugs in the generated wrapper code. Collected fixes so far: {{loop.collected}}."
+        },
+        {
+          "id": "apply_fixes",
+          "kind": "agent",
+          "prefer": ["codex"],
+          "prompt": "Apply fixes for flaws found in the current iteration."
+        }
+      ]
+    },
+    {
+      "id": "supervisor_decision",
+      "kind": "supervisor",
+      "needs": ["refinement_loop"],
+      "watch": ["parallel_proposers", "refinement_loop"],
+      "prefer": ["claude"],
+      "prompt": "Review the full migration outcome. If the refinement loop or parallel proposals flagged high-severity integration risks, inject a deep audit step: deep_audit."
+    }
+  ]
+}

@@ -148,3 +148,50 @@ def test_register_claude_refuses_invalid_json(tmp_path):
     (tmp_path / ".mcp.json").write_text("{not json")
     with pytest.raises(RegisterError):
         register_claude(str(tmp_path))
+
+
+def test_cmd_graph_mermaid(capsys):
+    from iworkflow.cli import _cmd_graph
+    _cmd_graph("review", spec_path=None, html_path=None, publish=False,
+               recipe_dir=None, mermaid=True)
+    captured = capsys.readouterr()
+    assert "```mermaid" in captured.out
+    assert "graph TD" in captured.out
+    assert "gate[" in captured.out
+    assert "subgraph fan [" in captured.out
+
+
+def test_cmd_graph_default_writes_html_tempfile(capsys, monkeypatch):
+    # The default (no flags) must NOT dump a raw ```mermaid fence to stdout:
+    # terminals/agent TUIs that auto-render mermaid can hang on cyclic graphs.
+    # It writes a self-contained HTML file and prints its path instead.
+    import re
+    from pathlib import Path
+    monkeypatch.setattr("webbrowser.open", lambda *a, **k: True)
+    from iworkflow.cli import _cmd_graph
+    _cmd_graph("review", spec_path=None, html_path=None, publish=False,
+               recipe_dir=None)
+    out = capsys.readouterr().out
+    assert "```mermaid" not in out
+    m = re.search(r"Generated HTML diagram: (\S+\.html)", out)
+    assert m, out
+    path = Path(m.group(1))
+    try:
+        assert path.exists()
+        content = path.read_text(encoding="utf-8")
+        assert "<!DOCTYPE html>" in content
+        assert "graph TD" in content
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_cmd_graph_html(tmp_path, monkeypatch):
+    monkeypatch.setattr("webbrowser.open", lambda *a, **k: True)
+    from iworkflow.cli import _cmd_graph
+    html_file = tmp_path / "diagram.html"
+    _cmd_graph("review", spec_path=None, html_path=str(html_file), publish=False, recipe_dir=None)
+    assert html_file.exists()
+    content = html_file.read_text(encoding="utf-8")
+    assert "<!DOCTYPE html>" in content
+    assert "graph TD" in content
+    assert "mermaid" in content
