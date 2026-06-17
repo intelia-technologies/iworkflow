@@ -251,7 +251,6 @@ def _cmd_graph(name: str | None, spec_path: str | None, html_path: str | None,
                publish: bool, recipe_dir: str | None, mermaid: bool = False) -> None:
     import os
     import subprocess
-    import sys
     import tempfile
     import webbrowser
     from .recipes import get_recipe

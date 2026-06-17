@@ -13,7 +13,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 # --- status vocabulary -------------------------------------------------------
 STATUS_READY = "ready"           # logged in / auth file present / models list
