@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import html as html_lib
 import json
+import re
 from typing import Any
-
 from .workflow import _TOKEN, _lookup
 
 # --------------------------------------------------------------------------
@@ -20,34 +21,32 @@ def _fmt(value: Any) -> str:
         return ""
     if isinstance(value, str):
         return value
-    if isinstance(value, (list, tuple)):
-        return ", ".join(_fmt(v) for v in value)
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
 def _resolve(text: str, ctx: dict[str, Any]) -> Any:
     """Substitute {{...}} tokens via the runtime templating core, but keep any
-    token that resolves to nothing (so the diagram still shows it as a knob)."""
-    whole = _TOKEN.fullmatch(text.strip())
-    if whole:
-        val = _lookup(whole.group(1), ctx)
-        return text if val is None else val
-
-    def _sub(m: Any) -> str:
-        val = _lookup(m.group(1), ctx)
-        return m.group(0) if val is None else _fmt(val)
-
+    unresolved tokens intact as markers of parameterization."""
+    def _sub(match: re.Match) -> str:
+        token = match.group(0)
+        path = match.group(1)
+        val = _lookup(path, ctx)
+        if val is None:
+            return token  # Keep the unresolved template token verbatim
+        return _fmt(val)
     return _TOKEN.sub(_sub, text)
 
 
 def _esc(value: Any) -> str:
     """Escape a resolved value for embedding in a Mermaid quoted/HTML label."""
+    if not isinstance(value, str):
+        value = str(value)
+    # Mermaid labels with quotes/HTML formatting need standard HTML entity escaping.
     return (
-        _fmt(value)
-        .replace("&", "&amp;")
+        html_lib.escape(value)
         .replace('"', "&quot;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
+        .replace("'", "&#39;")
+        .replace("\n", "<br/>")
     )
 
 
@@ -59,11 +58,19 @@ def _text(value: Any, ctx: dict[str, Any]) -> str:
 def _join(seq: Any, ctx: dict[str, Any]) -> str:
     if isinstance(seq, str):
         seq = [seq]
-    return ", ".join(_text(x, ctx) for x in (seq or []))
+    parts = []
+    for x in (seq or []):
+        if isinstance(x, dict):
+            prov = x.get("provider") or x.get("name") or ""
+            model = x.get("model")
+            parts.append(f"{_text(prov, ctx)}:{_text(model, ctx)}" if model else _text(prov, ctx))
+        else:
+            parts.append(_text(x, ctx))
+    return ", ".join(parts)
 
 
 def _meta_lines(spec: dict[str, Any], ctx: dict[str, Any]) -> list[str]:
-    """Common per-agent metadata: role/prefer/model/tools/timeout/heartbeat."""
+    """Common per-agent metadata: role/prefer/model/models/tools/timeout/heartbeat."""
     lines: list[str] = []
     if spec.get("role"):
         lines.append(f"role: {_text(spec.get('role'), ctx)}")
@@ -71,6 +78,11 @@ def _meta_lines(spec: dict[str, Any], ctx: dict[str, Any]) -> list[str]:
         lines.append(f"prefer: {_join(spec.get('prefer'), ctx)}")
     if spec.get("model"):
         lines.append(f"model: {_text(spec.get('model'), ctx)}")
+    if spec.get("models"):
+        models_dict = spec.get("models")
+        if isinstance(models_dict, dict):
+            m_parts = [f"{prov}→{_text(mod, ctx)}" for prov, mod in models_dict.items()]
+            lines.append(f"models: {', '.join(m_parts)}")
     if spec.get("tools"):
         lines.append(f"tools: {_join(spec.get('tools'), ctx)}")
     if spec.get("timeout_s"):
@@ -113,20 +125,8 @@ def render_parallel(step_id: str, step_spec: dict[str, Any],
     for i, a in enumerate(agents):
         a_id = a.get("id") or f"agent_{i}"
         full_a_id = f"{step_id}_{a_id}"
-        role = a.get("role")
-        prefer = a.get("prefer")
-        tools = a.get("tools")
-
         a_label_lines = [f"<b>{_text(a_id, ctx)}</b>"]
-        if role:
-            a_label_lines.append(f"role: {_text(role, ctx)}")
-        if prefer:
-            a_label_lines.append(f"prefer: {_join(prefer, ctx)}")
-        if a.get("model"):
-            a_label_lines.append(f"model: {_text(a.get('model'), ctx)}")
-        if tools:
-            a_label_lines.append(f"tools: {_join(tools, ctx)}")
-
+        a_label_lines += _meta_lines(a, ctx)
         a_label = "<br/>".join(a_label_lines)
         lines.append(f'        {full_a_id}["{a_label}"]')
         lines.append(f'        {step_id}_entry --> {full_a_id} --> {step_id}_exit')
@@ -150,20 +150,8 @@ def render_pipeline(step_id: str, step_spec: dict[str, Any],
     for i, s in enumerate(stages):
         s_id = s.get("id") or f"stage_{i}"
         full_s_id = f"{step_id}_{s_id}"
-        role = s.get("role")
-        prefer = s.get("prefer")
-        tools = s.get("tools")
-
         s_label_lines = [f"Stage {i}: <b>{_text(s_id, ctx)}</b>"]
-        if role:
-            s_label_lines.append(f"role: {_text(role, ctx)}")
-        if prefer:
-            s_label_lines.append(f"prefer: {_join(prefer, ctx)}")
-        if s.get("model"):
-            s_label_lines.append(f"model: {_text(s.get('model'), ctx)}")
-        if tools:
-            s_label_lines.append(f"tools: {_join(tools, ctx)}")
-
+        s_label_lines += _meta_lines(s, ctx)
         s_label = "<br/>".join(s_label_lines)
         lines.append(f'        {full_s_id}["{s_label}"]')
 

@@ -417,6 +417,7 @@ BRAINSTORM: dict[str, Any] = {
                     "id": "chat",
                     "kind": "agent",
                     "prefer": ["claude"],
+                    "models": {"claude": "sonnet-3.5"},
                     "prompt": "Current status: {{loop.collected}}. User says: {{params.user_input}}. Refine the direction until scope is locked."
                 }
             ]
