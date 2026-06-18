@@ -70,25 +70,35 @@ def _join(seq: Any, ctx: dict[str, Any]) -> str:
 
 
 def _meta_lines(spec: dict[str, Any], ctx: dict[str, Any]) -> list[str]:
-    """Common per-agent metadata: role/prefer/model/models/tools/timeout/heartbeat."""
+    """Common per-agent metadata: role/prefer/model/models/tools/timeout/heartbeat with strict fallback defaults."""
     lines: list[str] = []
-    if spec.get("role"):
-        lines.append(f"role: {_text(spec.get('role'), ctx)}")
-    if spec.get("prefer"):
-        lines.append(f"prefer: {_join(spec.get('prefer'), ctx)}")
-    if spec.get("model"):
-        lines.append(f"model: {_text(spec.get('model'), ctx)}")
-    if spec.get("models"):
-        models_dict = spec.get("models")
+    role = spec.get("role")
+    lines.append(f"role: {_text(role, ctx)}" if role else "role: default")
+
+    prefer = spec.get("prefer")
+    lines.append(f"prefer: {_join(prefer, ctx)}" if prefer else "prefer: auto-route")
+
+    model = spec.get("model")
+    models = spec.get("models")
+    if model:
+        lines.append(f"model: {_text(model, ctx)}")
+    elif models:
+        models_dict = models
         if isinstance(models_dict, dict):
             m_parts = [f"{prov}→{_text(mod, ctx)}" for prov, mod in models_dict.items()]
             lines.append(f"models: {', '.join(m_parts)}")
-    if spec.get("tools"):
-        lines.append(f"tools: {_join(spec.get('tools'), ctx)}")
-    if spec.get("timeout_s"):
-        lines.append(f"timeout: {_esc(spec.get('timeout_s'))}s")
-    if spec.get("heartbeat_interval_s"):
-        lines.append(f"heartbeat: {_esc(spec.get('heartbeat_interval_s'))}s")
+    else:
+        lines.append("model: default")
+
+    tools = spec.get("tools")
+    lines.append(f"tools: {_join(tools, ctx)}" if tools else "tools: none")
+
+    timeout = spec.get("timeout_s")
+    lines.append(f"timeout: {_esc(timeout)}s" if timeout else "timeout: 180s")
+
+    heartbeat = spec.get("heartbeat_interval_s")
+    lines.append(f"heartbeat: {_esc(heartbeat)}s" if heartbeat else "heartbeat: none")
+
     return lines
 
 
