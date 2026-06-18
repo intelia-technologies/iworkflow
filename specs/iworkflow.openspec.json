@@ -770,6 +770,11 @@
             "gh_required": {
               "type": "boolean",
               "default": false
+            },
+            "git_clean_required": {
+              "type": "boolean",
+              "description": "When true, pre-flight check enforces clean Git tracked files (ignores untracked files).",
+              "default": false
             }
           },
           "additionalProperties": true

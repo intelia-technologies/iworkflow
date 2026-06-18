@@ -817,13 +817,16 @@ def test_preflight_ignores_iworkflow_journal_dir(tmp_path):
         default_cwd=str(repo),
     )
     spec = {
-        "execution": {"worktree": "new:test"},
+        "execution": {"worktree": "new:test", "git_clean_required": True},
         "steps": [{"id": "s", "kind": "agent", "prefer": ["codex"], "prompt": "ok"}],
     }
 
     out = _run(run_spec(runner, spec, limits=Limits(allow_tools=True)))
     assert out["status"] == "DONE"
 
+    (repo / "dirty.txt").write_text("initial", encoding="utf-8")
+    subprocess.run(["git", "add", "dirty.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add dirty"], cwd=repo, check=True, capture_output=True)
     (repo / "dirty.txt").write_text("dirty", encoding="utf-8")
     runner2 = Runner(
         "journal-dirty",
@@ -866,7 +869,8 @@ def test_preflight_checks_uncommitted_changes(tmp_path):
     spec = {
         "name": "preflight_test",
         "execution": {
-            "worktree": "new:branch-name"
+            "worktree": "new:branch-name",
+            "git_clean_required": True
         },
         "steps": [
             {"id": "s1", "kind": "agent", "prefer": ["codex"], "prompt": "hello"}

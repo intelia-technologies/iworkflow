@@ -553,27 +553,31 @@ def check_preflight(
             pathspecs.append(f":(exclude){rel}")
             pathspecs.append(f":(exclude){rel.rstrip(os.sep)}/")
 
-        status_check = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=all", "--", *pathspecs],
-            capture_output=True,
-            text=True,
-            cwd=checked_cwd,
-            check=False
-        )
-        if status_check.returncode == 0 and status_check.stdout.strip():
-            dirty = []
-            for line in status_check.stdout.splitlines():
-                entry = line[3:] if len(line) > 3 else line
-                if entry:
-                    dirty.append(entry)
-            preview = ", ".join(dirty[:10])
-            if len(dirty) > 10:
-                preview += f", … and {len(dirty) - 10} more"
-            detail = f" Dirty paths: {preview}." if preview else ""
-            fail(
-                "Git repository has uncommitted changes outside the iworkflow journal. "
-                "Please stash or commit them first." + detail
+        if execution.get("git_clean_required"):
+            status_check = subprocess.run(
+                ["git", "status", "--porcelain", "--", *pathspecs],
+                capture_output=True,
+                text=True,
+                cwd=checked_cwd,
+                check=False
             )
+            if status_check.returncode == 0:
+                dirty = []
+                for line in status_check.stdout.splitlines():
+                    if line.startswith("??"):
+                        continue
+                    entry = line[3:] if len(line) > 3 else line
+                    if entry:
+                        dirty.append(entry)
+                if dirty:
+                    preview = ", ".join(dirty[:10])
+                    if len(dirty) > 10:
+                        preview += f", … and {len(dirty) - 10} more"
+                    detail = f" Dirty paths: {preview}." if preview else ""
+                    fail(
+                        "Git repository has uncommitted changes outside the iworkflow journal. "
+                        "Please stash or commit them first." + detail
+                    )
 
 
 class _Executor:
