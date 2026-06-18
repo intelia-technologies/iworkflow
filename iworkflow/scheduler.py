@@ -178,6 +178,19 @@ class Runner:
         log(f"ROUTE    {label}: {why} → {format_prefer(targets)}")
         self._emit(label, "route", kind=why, order=format_prefer(targets),
                    tools=list(tool_names))
+        display_prompt = prompt
+        if toolset is not None:
+            additions = toolset.prompt_additions()
+            if additions:
+                display_prompt = f"{additions}\n\n{prompt}"
+        self._emit(
+            label,
+            "prompt",
+            text=display_prompt,
+            prompt_sha=prompt_hash,
+            schema=bool(schema),
+            tools=list(tool_names),
+        )
         attempts: list[Attempt] = []
         last_heartbeat: float | None = None
 
@@ -251,6 +264,7 @@ class Runner:
                                  t_start=t_start, kind=why, tools=tool_names, usage=usage,
                                  model=dispatch_model or usage.get("model"))
                     self._emit(label, "done", provider=name,
+                               model=dispatch_model or usage.get("model"),
                                ms=round((time.time() - t_start) * 1000),
                                input_tokens=usage.get("input_tokens"),
                                output_tokens=usage.get("output_tokens"),

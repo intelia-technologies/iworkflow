@@ -447,6 +447,12 @@ def test_dashboard_server_api_endpoints(tmp_path):
     assert "overflowWrap" in HTML_DASHBOARD
     assert "col-span-3" in HTML_DASHBOARD
     assert "msg.dataset.kind = 'assistant'" in HTML_DASHBOARD
+    assert 'id="log-search"' in HTML_DASHBOARD
+    assert "Buscar en logs, prompts y respuestas" in HTML_DASHBOARD
+    assert "Prompt enviado al LLM" in HTML_DASHBOARD
+    assert "msg.dataset.kind = 'prompt'" in HTML_DASHBOARD
+    assert "providerLogo" in HTML_DASHBOARD
+    assert "providerModelForEvent" in HTML_DASHBOARD
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("localhost", 0))
@@ -473,6 +479,7 @@ def test_dashboard_server_api_endpoints(tmp_path):
         assert "Mapa del workflow" in html
         assert "Ver todo" in html
         assert "Detalle" in html
+        assert 'id="log-search"' in html
 
         cfg = json.loads(urllib.request.urlopen(f"{base_url}/api/config").read().decode("utf-8"))
         assert cfg["run_id"] == run_id

@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from iworkflow import FakeProvider, Provider, Runner
 
@@ -63,6 +64,36 @@ def test_agent_forwards_cwd_to_provider(tmp_path):
 
     assert result.ok
     assert provider.cwd == str(worktree)
+
+
+def test_agent_emits_prompt_before_dispatch_and_model_on_done(tmp_path):
+    provider = FakeProvider("codex")
+    runner = Runner(
+        "prompt-event",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+    )
+
+    result = asyncio.run(
+        runner.agent(
+            "write a plan for dashboards",
+            label="planner",
+            prefer=["codex"],
+            model="gpt-5.1-codex-mini",
+        )
+    )
+
+    assert result.ok
+    events_path = tmp_path / "runs" / "prompt-event" / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert [e["event"] for e in events] == ["route", "prompt", "dispatch", "done"]
+    assert events[1]["label"] == "planner"
+    assert events[1]["text"] == "write a plan for dashboards"
+    assert events[1]["prompt_sha"]
+    assert events[2]["model"] == "gpt-5.1-codex-mini"
+    assert events[3]["model"] == "gpt-5.1-codex-mini"
+
 
 
 def test_failover_order(tmp_path):

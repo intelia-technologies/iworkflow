@@ -86,6 +86,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
             <div>
               <div class="text-xs uppercase tracking-wider text-slate-400 font-semibold" id="run-log-title">Actividad del run</div>
               <div class="text-xs text-slate-500 mt-1" id="run-log-subtitle">Salida reciente de agentes/comandos y eventos de estado.</div>
+              <input id="log-search" type="search" placeholder="Buscar en logs, prompts y respuestas…" class="mt-3 w-full max-w-md rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-200 placeholder:text-slate-600 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500" />
             </div>
             <div class="text-right shrink-0 space-y-2">
               <div>
@@ -172,6 +173,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <script type="module">
     let activeTab = 'prompt';
     let selectedStepId = null;
+    let logQuery = '';
     let baseMermaid = '';
     let currentData = { events: [], steps: {}, spec: null };
 
@@ -258,8 +260,8 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
       // Render tab values
       // 1. Prompt
-      const lastDispatch = [...stepEvents].reverse().find(e => e.event === 'dispatch' || e.event === 'route');
-      document.getElementById('val-prompt').innerText = step.prompt || (step.agent ? step.agent.prompt : '') || 'N/A';
+      const promptEv = [...stepEvents].reverse().find(e => e.event === 'prompt' && e.text);
+      document.getElementById('val-prompt').innerText = promptEv?.text || step.prompt || (step.agent ? step.agent.prompt : '') || 'N/A';
 
       // 2. Result + live output
       const resultObj = currentData.steps[selectedStepId];
@@ -476,6 +478,26 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       });
     }
 
+    function providerLogo(provider) {
+      const key = String(provider || '').toLowerCase();
+      if (key === 'codex') return 'CX';
+      if (key === 'gemini') return 'GM';
+      if (key === 'claude') return 'CL';
+      if (key === 'cursor') return 'CU';
+      if (key === 'local') return '$';
+      return key ? key.slice(0, 2).toUpperCase() : 'AI';
+    }
+
+    function providerModelForEvent(ev) {
+      const label = ev.label;
+      const related = [...currentData.events].reverse().find(e =>
+        e.label === label && (e.event === 'done' || e.event === 'dispatch') && (e.provider || e.model)
+      );
+      const provider = ev.provider || related?.provider || 'unknown';
+      const model = ev.model || related?.model || 'default';
+      return {provider, model};
+    }
+
     function compactCommand(command) {
       if (!command) return 'herramienta';
       const text = String(command).replace(/\\s+/g, ' ').trim();
@@ -574,6 +596,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
     function formatEventForLog(ev) {
       if (ev.event === 'output' && ev.text) return formatOutputEvent(ev);
+      if (ev.event === 'prompt') return {kind: 'prompt', text: `Prompt enviado al LLM:\n\n${ev.text || ''}`};
       if (ev.event === 'dispatch') return {kind: 'meta', text: `started ${ev.provider || ''}`.trim()};
       if (ev.event === 'route') return {kind: 'meta', text: `route: ${ev.order || ev.provider || 'selected'}`};
       if (ev.event === 'done') {
@@ -591,6 +614,17 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       return formatted.text.replace(/\\s+/g, ' ').trim().slice(0, 120);
     }
 
+    function eventSearchText(ev) {
+      const formatted = formatEventForLog(ev);
+      const meta = [ev.label, ev.event, ev.provider, ev.model, ev.stream, formatted.kind].filter(Boolean).join(' ');
+      return `${meta} ${formatted.text}`.toLowerCase();
+    }
+
+    function eventMatchesLogQuery(ev) {
+      if (!logQuery) return true;
+      return eventSearchText(ev).includes(logQuery);
+    }
+
     function updateRunLog() {
       const log = document.getElementById('run-log');
       const latest = document.getElementById('latest-output');
@@ -603,7 +637,8 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       const sourceEvents = selectedStepId
         ? currentData.events.filter(e => eventMatchesStep(e, selectedStepId))
         : currentData.events;
-      const events = sourceEvents.slice(-120);
+      const filteredEvents = sourceEvents.filter(eventMatchesLogQuery);
+      const events = filteredEvents.slice(-120);
 
       title.innerText = selectedStepId ? `Actividad: ${selectedStepId}` : 'Actividad del run';
       subtitle.innerText = selectedStepId
@@ -615,9 +650,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       if (events.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'text-slate-500 italic';
-        empty.innerText = 'Aún no hay eventos.';
+        empty.innerText = logQuery ? 'No hay eventos que coincidan con la búsqueda.' : 'Aún no hay eventos.';
         log.appendChild(empty);
-        latest.innerText = selectedStepId ? `${selectedStepId}: sin eventos` : 'Esperando eventos...';
+        latest.innerText = logQuery ? `Sin resultados para: ${logQuery}` : selectedStepId ? `${selectedStepId}: sin eventos` : 'Esperando eventos...';
         return;
       }
 
@@ -650,10 +685,35 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         if (formatted.kind === 'assistant') {
           msg.dataset.kind = 'assistant';
           msg.className += ' col-span-3 rounded-lg border border-emerald-900/60 bg-slate-900/80 p-3 text-slate-100';
+          const meta = providerModelForEvent(ev);
+          const badge = document.createElement('div');
+          badge.className = 'mb-3 flex items-center gap-2 text-[11px] uppercase tracking-wide text-emerald-300';
+          const logo = document.createElement('span');
+          logo.className = 'rounded bg-emerald-400/10 px-1.5 py-0.5 font-bold';
+          logo.innerText = providerLogo(meta.provider);
+          const providerName = document.createElement('span');
+          providerName.innerText = meta.provider;
+          const modelName = document.createElement('span');
+          modelName.className = 'text-slate-500';
+          modelName.innerText = meta.model || 'default';
+          badge.appendChild(logo);
+          badge.appendChild(providerName);
+          badge.appendChild(modelName);
+          const body = document.createElement('div');
+          body.className = 'whitespace-pre-wrap';
+          body.innerText = formatted.text;
+          msg.appendChild(badge);
+          msg.appendChild(body);
+        } else if (formatted.kind === 'prompt') {
+          msg.dataset.kind = 'prompt';
+          msg.className += ' col-span-3 rounded-lg border border-cyan-900/60 bg-cyan-950/40 p-3 text-cyan-50';
+          msg.innerText = formatted.text;
         } else if (formatted.kind === 'tool') {
           msg.className += ' text-slate-400';
+          msg.innerText = formatted.text;
+        } else {
+          msg.innerText = formatted.text;
         }
-        msg.innerText = formatted.text;
 
         row.appendChild(time);
         row.appendChild(label);
@@ -667,6 +727,13 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         log.scrollTop = log.scrollHeight;
       }
     }
+
+    document.addEventListener('input', ev => {
+      if (ev.target && ev.target.id === 'log-search') {
+        logQuery = ev.target.value.toLowerCase().trim();
+        updateRunLog();
+      }
+    });
 
     init();
   </script>
