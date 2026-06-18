@@ -11,7 +11,9 @@ from iworkflow.mcp_server import (
     _resolve_catalog,
     _resolve_journal_dir,
     _resolve_run_id,
+    _workflow_status,
     run_workflow,
+    workflow_poll,
     workflow_start,
     workflow_stream,
 )
@@ -81,6 +83,56 @@ def test_run_workflow_degrades_when_synth_exhausted(tmp_path):
     result = asyncio.run(run_workflow("what is 2+2?", runner=runner, run_id="t1"))
     assert result.get("degraded") is True
     assert result.get("output") is not None
+
+
+def test_run_workflow_persists_aggregate_result_for_reconnect(tmp_path):
+    runner = Runner(
+        "persisted-result",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+    )
+    spec = {
+        "steps": [{"id": "a", "kind": "agent", "prefer": ["codex"], "prompt": "a"}],
+        "output": "{{steps.a.value}}",
+    }
+
+    result = asyncio.run(run_workflow(spec=spec, runner=runner, run_id="persisted-result", journal_dir=str(tmp_path)))
+    status, loaded, hint = _workflow_status("persisted-result", str(tmp_path))
+
+    assert result["status"] == "DONE"
+    assert status == "done"
+    assert hint is None
+    assert loaded == result
+
+
+def test_poll_follows_remembered_journal_dir_after_reconnect(tmp_path, monkeypatch):
+    server_root = tmp_path / "server"
+    repo = tmp_path / "repo"
+    server_root.mkdir()
+    repo.mkdir()
+    monkeypatch.chdir(server_root)
+
+    runner = Runner(
+        "remembered-run",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path / "runner-ledger"),
+    )
+    spec = {
+        "steps": [{"id": "a", "kind": "agent", "prefer": ["codex"], "prompt": "a"}],
+        "output": "{{steps.a.value}}",
+    }
+
+    result = asyncio.run(run_workflow(
+        spec=spec, runner=runner, run_id="remembered-run", cwd=str(repo), journal_dir=".iworkflow",
+    ))
+    poll = asyncio.run(workflow_poll("remembered-run"))
+
+    assert result["journal_dir"] == str(repo / ".iworkflow")
+    assert poll["status"] == "done"
+    assert poll["journal_dir"] == str(repo / ".iworkflow")
+    assert poll["result"] == result
 
 
 def test_resolve_catalog_loads_from_root(tmp_path):

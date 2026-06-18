@@ -510,7 +510,7 @@ def test_brainstorm_recipe_avoids_claude_interactive_hangs():
     spec = get_recipe("brainstorm")
     by_id = {step["id"]: step for step in spec["steps"]}
 
-    for sid in ["phase2_clarification", "phase4_proposals", "phase8_handoff"]:
+    for sid in ["phase1_search", "phase2_clarification", "phase4_proposals", "phase8_handoff"]:
         step = by_id[sid]
         assert step["prefer"][:2] == ["gemini", "codex"]
         assert step["prefer"] != ["claude:opus"]

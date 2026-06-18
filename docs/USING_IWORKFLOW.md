@@ -77,8 +77,11 @@ Shared optional params on start/sync tools:
 - `recipe_dir` — host recipes under `.iworkflow/recipes` or a custom path.
 - `journal_dir` — where `.iworkflow/runs/<run_id>/` is written (default `.iworkflow`).
   Relative paths resolve against `cwd` when `cwd` is provided, not against the MCP
-  server process directory. `workflow_start` returns the resolved value; reuse it
-  for cross-process `poll`/`stream` calls.
+  server process directory. `workflow_start` returns the resolved value. The MCP
+  server also records a lightweight `.iworkflow/run-index.json` pointer so a later
+  `poll`/`stream` from the same server working directory can find the resolved
+  journal after reconnect; passing the returned `journal_dir` is still the most
+  explicit cross-process path.
 
 Pass **exactly one** driver to start/sync:
   - `spec={...}` — your own dynamic workflow (the DYNAMIC door).
@@ -90,7 +93,9 @@ Pass **exactly one** driver to start/sync:
 start = iworkflow_workflow_start(goal="…", cwd="/path/to/repo")
 after = 0
 while True:
-  chunk = iworkflow_workflow_stream(start["run_id"], after=after, block_s=5)
+  chunk = iworkflow_workflow_stream(
+      start["run_id"], journal_dir=start["journal_dir"], after=after, block_s=5,
+  )
   after = chunk["next_after"]
   # handle chunk["events"] …
   if chunk["status"] in {"done", "error", "unknown_done", "failed_to_start", "not_found"}:
@@ -98,9 +103,12 @@ while True:
 ```
 
 Terminal stream statuses are `done`, `error`, `unknown_done`, `failed_to_start`,
-and `not_found`. `failed_to_start` usually means the run directory was created but
-no event could be written; `not_found` means no run directory exists for that
-`run_id` in the selected `journal_dir`.
+and `not_found`. Finished aggregate bundles are persisted to `result.json`, so a
+reconnected MCP process can return `done` with `result` from disk. `unknown_done`
+means only per-agent events are present and no aggregate `result.json` exists.
+`failed_to_start` usually means the run directory was created but no event could
+be written; `not_found` means no run directory exists for that `run_id` in the
+selected or remembered `journal_dir`.
 
 The result returns as a **structured tool result** (no stdout parsing), and tools
 are **discoverable** in the agent's tool list.

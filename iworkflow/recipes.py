@@ -358,10 +358,10 @@ BRAINSTORM: dict[str, Any] = {
         {
             "id": "phase1_search",
             "kind": "agent",
-            "prefer": ["gemini"],
+            "prefer": ["gemini", "codex", "claude"],
             "role": "researcher",
-            "timeout_s": 120,
-            "heartbeat_interval_s": 30,
+            "timeout_s": 60,
+            "heartbeat_interval_s": 15,
             "tools": ["grep", "find"],
             "prompt": "Search the codebase and 'openspec/changes/' for any existing brainstorms related to: {{params.change_name}}. List them or confirm if none exist."
         },

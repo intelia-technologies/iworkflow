@@ -12,7 +12,7 @@ Register with Codex (per-invocation, no global config pollution):
              "Call the iworkflow workflow tool with goal=..."
 
 Long-running workflows (typical MCP tool timeout ~30s):
-  1. iworkflow_workflow_start(goal=...)  -> {run_id, status: "started"}
+  1. iworkflow_workflow_start(goal=...)  -> {run_id, status: "started", journal_dir}
   2. iworkflow_workflow_stream(run_id, after=0, block_s=5)  # incremental events
      or iworkflow_workflow_poll(run_id)  # snapshot poll
 """
@@ -44,7 +44,7 @@ SYNC_WORKFLOW_DOC = """\
 [DEPRECATED for long runs] Blocking workflow — returns only when finished.
 
 Most MCP clients time out around 30s. For anything non-trivial prefer:
-  1. iworkflow_workflow_start(...) -> {run_id}
+  1. iworkflow_workflow_start(...) -> {run_id, journal_dir}
   2. iworkflow_workflow_stream(run_id, after=<cursor>, block_s=5)
      or iworkflow_workflow_poll(run_id)
 
@@ -133,6 +133,84 @@ def _maybe_degrade_fan_synthesize(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+
+
+def _run_dir(run_id: str, journal_dir: str = ".iworkflow") -> Path:
+    return Path(journal_dir) / "runs" / run_id
+
+
+def _result_path(run_id: str, journal_dir: str = ".iworkflow") -> Path:
+    return _run_dir(run_id, journal_dir) / "result.json"
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, sort_keys=True, default=str)
+        fh.write("\n")
+        fh.flush()
+        import os
+        os.fsync(fh.fileno())
+    tmp.replace(path)
+
+
+def _persist_result(run_id: str, journal_dir: str, result: dict[str, Any]) -> None:
+    _write_json_atomic(_result_path(run_id, journal_dir), result)
+
+
+def _load_result(run_id: str, journal_dir: str) -> dict[str, Any] | None:
+    path = _result_path(run_id, journal_dir)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _run_index_path(index_journal_dir: str = ".iworkflow") -> Path:
+    return Path(index_journal_dir) / "run-index.json"
+
+
+def _remember_journal_dir(run_id: str, resolved_journal_dir: str, *, index_journal_dir: str = ".iworkflow") -> None:
+    path = _run_index_path(index_journal_dir)
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    existing[run_id] = resolved_journal_dir
+    _write_json_atomic(path, existing)
+
+
+def _lookup_remembered_journal_dir(run_id: str, *, index_journal_dir: str = ".iworkflow") -> str | None:
+    path = _run_index_path(index_journal_dir)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = data.get(run_id) if isinstance(data, dict) else None
+    if not isinstance(value, str):
+        return None
+    if (Path(value) / "runs" / run_id).exists():
+        return value
+    return None
+
+
+def _resolve_observe_journal_dir(run_id: str, journal_dir: str, cwd: str | None) -> str:
+    resolved = _resolve_journal_dir(journal_dir, cwd)
+    if cwd is not None:
+        return resolved
+    remembered = _lookup_remembered_journal_dir(run_id, index_journal_dir=journal_dir)
+    if remembered:
+        return remembered
+    return resolved
+
 def _events_path(run_id: str, journal_dir: str = ".iworkflow") -> Path:
     return Path(journal_dir) / "runs" / run_id / "events.jsonl"
 
@@ -210,6 +288,10 @@ def _workflow_status(
     if hist is not None:
         return hist["status"], hist["result"], hist["error"]
 
+    persisted = _load_result(run_id, journal_dir)
+    if persisted is not None:
+        return "done", persisted, None
+
     events = _tail_events(run_id, journal_dir, limit=5)
 
     # Check on-disk events
@@ -275,6 +357,8 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
         result = _maybe_degrade_fan_synthesize(result)
         result["run_id"] = rid
         result["journal_dir"] = resolved_journal_dir
+        _persist_result(rid, resolved_journal_dir, result)
+        _remember_journal_dir(rid, resolved_journal_dir)
         return result
     except Exception as e:
         try:
@@ -301,6 +385,7 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
     """Start a workflow in the background; poll/stream with run_id."""
     rid = _resolve_run_id(run_id, goal, params)
     resolved_journal_dir = _resolve_journal_dir(journal_dir, cwd)
+    _remember_journal_dir(rid, resolved_journal_dir)
     existing = _jobs.get(rid)
     if existing is not None and not existing.done():
         return {"run_id": rid, "status": "running"}
@@ -358,11 +443,12 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
 
 async def workflow_poll(run_id: str, journal_dir: str = ".iworkflow", cwd: str | None = None) -> dict[str, Any]:
     """Poll a background workflow started via `workflow_start`."""
-    journal_dir = _resolve_journal_dir(journal_dir, cwd)
+    journal_dir = _resolve_observe_journal_dir(run_id, journal_dir, cwd)
     status, result, hint = _workflow_status(run_id, journal_dir)
     payload: dict[str, Any] = {
         "run_id": run_id,
         "status": status,
+        "journal_dir": journal_dir,
         "events": _tail_events(run_id, journal_dir),
     }
     if result is not None:
@@ -388,7 +474,7 @@ async def workflow_stream(
     Call repeatedly with the returned `next_after` cursor. Set `block_s>0` to wait
     for new events (long-poll) instead of returning immediately when caught up.
     """
-    journal_dir = _resolve_journal_dir(journal_dir, cwd)
+    journal_dir = _resolve_observe_journal_dir(run_id, journal_dir, cwd)
     deadline = time.time() + max(block_s, 0.0)
     cursor = after
     events: list[dict] = []
@@ -407,6 +493,7 @@ async def workflow_stream(
     payload: dict[str, Any] = {
         "run_id": run_id,
         "status": status,
+        "journal_dir": journal_dir,
         "events": events,
         "next_after": cursor,
         "stream": "events.jsonl",
