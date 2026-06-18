@@ -96,6 +96,22 @@ PATCH_RESULT_SCHEMA: dict[str, Any] = {
 }
 
 
+WORKFLOW_DESIGN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["workflow_name", "description", "steps"],
+    "properties": {
+        "workflow_name": {"type": "string"},
+        "description": {"type": "string"},
+        "params": {"type": "object"},
+        "schemas": {"type": "object"},
+        "steps": {"type": "array", "items": {"type": "object"}},
+        "artifacts": {"type": "array", "items": {"type": "object"}},
+        "output": {"type": "object"},
+    },
+}
+
+
 # --- built-in recipes (specs) --------------------------------------------
 FAN_SYNTHESIZE: dict[str, Any] = {
     "name": "fan_synthesize",
@@ -492,9 +508,103 @@ BRAINSTORM: dict[str, Any] = {
     }
 }
 
+
+DESIGN_WORKFLOW: dict[str, Any] = {
+    "name": "design_workflow",
+    "description": "Scouts the repository to understand goals, probes subscription CLIs for available capacity/limits, and designs a new declarative iworkflow recipe (.json spec).",
+    "params": {
+        "workflow_name": None,
+        "goals": None,
+        "user_input": "",
+    },
+    "schemas": {
+        "proposal": WORKFLOW_DESIGN_SCHEMA,
+    },
+    "steps": [
+        {
+            "id": "phase1_scout",
+            "kind": "agent",
+            "prefer": ["gemini", "codex", "claude"],
+            "timeout_s": 120,
+            "heartbeat_interval_s": 30,
+            "tools": ["find", "grep"],
+            "prompt": "Scout the repository. Locate existing specs in specs/ or .iworkflow/recipes/ to avoid duplication, and analyze tool implementations related to the goal: {{params.goals}}.",
+        },
+        {
+            "id": "phase2_probe",
+            "kind": "agent",
+            "prefer": ["gemini", "codex", "claude"],
+            "timeout_s": 60,
+            "heartbeat_interval_s": 15,
+            "tools": ["sessions"],
+            "prompt": "Check the status and limits of the subscription CLIs. Identify which providers (codex, claude, gemini, cursor) are healthy and have headroom.",
+        },
+        {
+            "id": "phase3_design",
+            "kind": "agent",
+            "schema": "proposal",
+            "prefer": ["gemini", "codex", "claude"],
+            "timeout_s": 120,
+            "heartbeat_interval_s": 30,
+            "prompt": "Design a new workflow recipe for '{{params.workflow_name}}'. Use the codebase context from {{steps.phase1_scout.value}} and provider sessions from {{steps.phase2_probe.value}}. Structure steps (agent, parallel, pipeline, loop), schemas, and limits. Goal: {{params.goals}}.",
+        },
+        {
+            "id": "phase4_refine_loop",
+            "kind": "loop",
+            "max_iterations": 3,
+            "collect": {"from": "chat"},
+            "until": {
+                "agent": {
+                    "prompt": "Review the workflow design: {{steps.phase3_design.value}} and user refinement: {{loop.collected}}. Return STOP if the design is fully locked and approved, else CONTINUE with adjustments.",
+                    "stop_when": "STOP",
+                    "prefer": ["gemini", "codex", "claude"],
+                    "timeout_s": 120,
+                    "heartbeat_interval_s": 30,
+                }
+            },
+            "body": [
+                {
+                    "id": "chat",
+                    "kind": "agent",
+                    "prefer": ["gemini", "codex", "claude"],
+                    "timeout_s": 120,
+                    "heartbeat_interval_s": 30,
+                    "prompt": "Refine the workflow design based on the latest user input: {{params.user_input}}. Existing design: {{steps.phase3_design.value}}. Previous refinement chat: {{loop.collected}}.",
+                }
+            ],
+        },
+        {
+            "id": "phase5_write_spec",
+            "kind": "agent",
+            "prefer": ["codex", "gemini", "claude"],
+            "timeout_s": 90,
+            "heartbeat_interval_s": 15,
+            "sandbox": "write",
+            "tools": ["write"],
+            "write_paths": [".iworkflow/recipes/{{params.workflow_name}}.json"],
+            "prompt": "Write the approved workflow spec JSON to '.iworkflow/recipes/{{params.workflow_name}}.json'. Original spec: {{steps.phase3_design.value}}. Final refinements: {{steps.phase4_refine_loop.value}}.",
+        },
+        {
+            "id": "phase6_verify",
+            "kind": "agent",
+            "prefer": ["gemini", "codex", "claude"],
+            "timeout_s": 60,
+            "heartbeat_interval_s": 15,
+            "prompt": "Confirm that '.iworkflow/recipes/{{params.workflow_name}}.json' has been created successfully. Suggest rendering its diagram using: iworkflow graph {{params.workflow_name}} --html",
+        },
+    ],
+    "artifacts": [
+        {"path": ".iworkflow/recipes/{{params.workflow_name}}.json", "type": "file"}
+    ],
+    "output": {
+        "recipe_path": ".iworkflow/recipes/{{params.workflow_name}}.json",
+    },
+}
+
+
 BUILTIN: dict[str, dict[str, Any]] = {
     spec["name"]: spec
-    for spec in (FAN_SYNTHESIZE, REVIEW, ROADMAP, DEEP_REVIEW, ADAPTIVE_REVIEW, COMPLEX_SECURITY_AUDIT, BRAINSTORM)
+    for spec in (FAN_SYNTHESIZE, REVIEW, ROADMAP, DEEP_REVIEW, ADAPTIVE_REVIEW, COMPLEX_SECURITY_AUDIT, BRAINSTORM, DESIGN_WORKFLOW)
 }
 
 DEFAULT_RECIPE_DIR = ".iworkflow/recipes"

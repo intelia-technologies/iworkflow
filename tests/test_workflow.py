@@ -507,6 +507,18 @@ def test_resume_journals_completed_steps(tmp_path):
     assert out2["steps"]["sum"] == out1["steps"]["sum"]
 
 
+def test_design_workflow_recipe_metadata():
+    spec = get_recipe("design_workflow")
+    assert spec["name"] == "design_workflow"
+    assert spec["artifacts"] == [
+        {"path": ".iworkflow/recipes/{{params.workflow_name}}.json", "type": "file"}
+    ]
+    by_id = {s["id"]: s for s in spec["steps"]}
+    assert by_id["phase5_write_spec"]["write_paths"] == [
+        ".iworkflow/recipes/{{params.workflow_name}}.json"
+    ]
+
+
 def test_brainstorm_recipe_avoids_claude_interactive_hangs():
     spec = get_recipe("brainstorm")
     by_id = {step["id"]: step for step in spec["steps"]}
