@@ -396,8 +396,6 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         steps.forEach(s => {
           const state = stepStates[s.id] || 'pending';
           code += `\\nclass ${s.id} ${state}`;
-          // Also set click event
-          code += `\\nclick ${s.id} call selectStep()`;
           if (s.body) applyClasses(s.body);
         });
       }
@@ -409,6 +407,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       try {
         const { svg } = await window.mermaid.render('graph-div', code);
         container.innerHTML = svg;
+        wireGraphClicks();
       } catch (err) {
         console.error("Mermaid render error:", err);
       }
@@ -442,6 +441,39 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       document.getElementById('hdr-calls').innerText = calls;
 
       updateRunLog();
+    }
+
+    function flattenSteps(steps, out = []) {
+      (steps || []).forEach(step => {
+        out.push(step);
+        if (step.body) flattenSteps(step.body, out);
+      });
+      return out;
+    }
+
+    function wireGraphClicks() {
+      const svg = document.querySelector('#mermaid-container svg');
+      if (!svg || !currentData.spec) return;
+      const nodes = Array.from(svg.querySelectorAll('.node'));
+      flattenSteps(currentData.spec.steps || []).forEach(step => {
+        const node = nodes.find(n => n.textContent.trim().startsWith(`${step.id} `));
+        if (!node) return;
+        node.style.cursor = 'pointer';
+        node.setAttribute('role', 'button');
+        node.setAttribute('tabindex', '0');
+        node.setAttribute('aria-label', `Filtrar logs de ${step.id}`);
+        node.addEventListener('click', ev => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          window.selectStep(step.id);
+        }, {capture: true});
+        node.addEventListener('keydown', ev => {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            window.selectStep(step.id);
+          }
+        });
+      });
     }
 
     function updateRunLog() {

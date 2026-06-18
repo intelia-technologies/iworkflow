@@ -426,8 +426,9 @@ def test_dashboard_server_api_endpoints(tmp_path):
     (run_dir / "wf-steps.json").write_text(json.dumps({"a": "value_a"}), encoding="utf-8")
 
     assert '<script type="module">' in HTML_DASHBOARD
-    assert "click ${s.id} call selectStep()" in HTML_DASHBOARD
-    assert "click ${s.id} call selectStep;" not in HTML_DASHBOARD
+    assert "wireGraphClicks" in HTML_DASHBOARD
+    assert "addEventListener('click'" in HTML_DASHBOARD
+    assert "click ${s.id} call selectStep" not in HTML_DASHBOARD
     assert "class ${s.id} ${state};" not in HTML_DASHBOARD
     assert 'id="run-log"' in HTML_DASHBOARD
     assert "Actividad del run" in HTML_DASHBOARD
@@ -437,6 +438,7 @@ def test_dashboard_server_api_endpoints(tmp_path):
     assert "openSelectedDetail" in HTML_DASHBOARD
     assert "Mostrando solo la salida" in HTML_DASHBOARD
     assert "classDef selected" in HTML_DASHBOARD
+    assert "Filtrar logs de" in HTML_DASHBOARD
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("localhost", 0))
