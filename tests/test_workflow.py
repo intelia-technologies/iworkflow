@@ -513,8 +513,13 @@ def test_brainstorm_recipe_avoids_claude_interactive_hangs():
     for sid in ["phase2_clarification", "phase4_proposals", "phase8_handoff"]:
         step = by_id[sid]
         assert step["prefer"][:2] == ["gemini", "codex"]
+        assert step["prefer"] != ["claude:opus"]
         assert step["timeout_s"] <= 60
         assert step["heartbeat_interval_s"] <= 15
+
+    assert spec["artifacts"] == [
+        {"path": "openspec/changes/{{params.change_name}}/brainstorm.md", "type": "file"}
+    ]
 
     for sid in ["phase6_write_spec", "phase7_update_wiki"]:
         step = by_id[sid]
@@ -564,6 +569,60 @@ def test_loop_decider_propagates_timeout_and_heartbeat(tmp_path):
     out = _run(run_spec(runner, spec))
     assert out["status"] == "DONE"
     assert seen == {"timeout_s": 17, "heartbeat_interval_s": 5}
+
+
+def test_required_agent_exhaustion_fails_workflow(tmp_path):
+    provider = FakeProvider("codex", limit_first_n=99)
+    runner = Runner("required-exhausted", {"codex": provider}, {"codex": 1}, journal_dir=str(tmp_path))
+    spec = {"steps": [{"id": "critical", "kind": "agent", "prefer": ["codex"], "prompt": "must work"}]}
+
+    with pytest.raises(WorkflowError) as exc_info:
+        _run(run_spec(runner, spec))
+
+    assert "agent step 'critical' exhausted" in str(exc_info.value)
+
+
+def test_optional_agent_exhaustion_can_continue(tmp_path):
+    provider = FakeProvider("codex", limit_first_n=99)
+    runner = Runner("optional-exhausted", {"codex": provider}, {"codex": 1}, journal_dir=str(tmp_path))
+    spec = {"steps": [{
+        "id": "best_effort", "kind": "agent", "prefer": ["codex"],
+        "required": False, "prompt": "try",
+    }]}
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert out["steps"]["best_effort"] is None
+
+
+def test_required_artifact_missing_fails_workflow(tmp_path):
+    runner, _ = _fake_runner(tmp_path)
+    runner.default_cwd = str(tmp_path)
+    spec = {
+        "artifacts": [{"path": "missing.txt", "type": "file"}],
+        "steps": [{"id": "a", "kind": "agent", "prefer": ["codex"], "prompt": "ok"}],
+    }
+
+    with pytest.raises(WorkflowError) as exc_info:
+        _run(run_spec(runner, spec))
+
+    assert "required workflow artifact(s) missing" in str(exc_info.value)
+    assert str(tmp_path / "missing.txt") in str(exc_info.value)
+
+
+def test_required_artifact_existing_allows_done(tmp_path):
+    (tmp_path / "out.txt").write_text("ok", encoding="utf-8")
+    runner, _ = _fake_runner(tmp_path)
+    runner.default_cwd = str(tmp_path)
+    spec = {
+        "artifacts": [{"path": "out.txt", "type": "file"}],
+        "steps": [{"id": "a", "kind": "agent", "prefer": ["codex"], "prompt": "ok"}],
+    }
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
 
 
 def test_preflight_checks_uncommitted_changes(tmp_path):

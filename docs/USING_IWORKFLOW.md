@@ -61,7 +61,7 @@ own reasoning. `iworkflow register` once, then these tools appear:
 - `iworkflow_ping()` — liveness.
 - `iworkflow_list_workflows(recipe_dir?)` — recipes (built-in + host dir).
 - `iworkflow_workflow_start(goal? | workflow?+params? | spec?, …)` — **start** a
-  workflow without blocking. Returns `{run_id, status: "started"}` or a
+  workflow without blocking. Returns `{run_id, status: "started", journal_dir}` or a
   synchronous `{run_id, status: "error", error: "pre-flight check failed: ..."}`.
 - `iworkflow_workflow_stream(run_id, after=0, block_s=5)` — **incremental progress**
   from `events.jsonl` (SSE-like long-poll). Use returned `next_after` as cursor.
@@ -76,6 +76,9 @@ Shared optional params on start/sync tools:
   `iworkflow catalog`).
 - `recipe_dir` — host recipes under `.iworkflow/recipes` or a custom path.
 - `journal_dir` — where `.iworkflow/runs/<run_id>/` is written (default `.iworkflow`).
+  Relative paths resolve against `cwd` when `cwd` is provided, not against the MCP
+  server process directory. `workflow_start` returns the resolved value; reuse it
+  for cross-process `poll`/`stream` calls.
 
 Pass **exactly one** driver to start/sync:
   - `spec={...}` — your own dynamic workflow (the DYNAMIC door).
@@ -158,14 +161,16 @@ The result of a run is a **bundle**:
 
 ## Writing a dynamic spec
 
-A spec is `{ name?, description?, params?, schemas?, output?, steps:[…] }`. Each step
-has an `id`, a `kind`, optional `needs` (prior step ids), and kind-specific fields.
+A spec is `{ name?, description?, params?, schemas?, output?, artifacts?, steps:[…] }`.
+Each step has an `id`, a `kind`, optional `needs` (prior step ids), and kind-specific
+fields. `artifacts` lists required output files/dirs validated before `DONE`; relative
+artifact paths resolve against workflow `cwd`.
 
 ### Step kinds
 
 | kind | what it does | key fields |
 |---|---|---|
-| `agent` | one worker call | `prompt`, `schema?`, `prefer?`, `role?`, `gate?`, `sandbox?`, `tools?` |
+| `agent` | one worker call | `prompt`, `schema?`, `prefer?`, `role?`, `gate?`, `sandbox?`, `tools?`, `required?` |
 | `parallel` | fan-out **barrier** of agents | `agents:[…]` |
 | `pipeline` | per-item staged flow, **no barrier** between stages | `items` (→list), `stages:[…]` |
 | `loop` | repeat a `body` until a stop condition | `body:[…]`, `until`, `max_iterations` (required), `collect?` |
@@ -194,6 +199,9 @@ A string that is **exactly** one `{{token}}` resolves to the raw object (so
   JSON block.
 - `prefer` overrides routing; omit it to let routing pick by `role`/inferred task kind
   (and, with `learn=True`, demote providers the ledger shows failing).
+- `required` defaults to `true`; if all preferred providers fail/exhaust, a sequential
+  agent fails the workflow instead of feeding `null` into downstream prompts. Use
+  `required:false` only for explicit best-effort/degraded steps.
 
 ### `parallel` — fan-out barrier
 ```jsonc

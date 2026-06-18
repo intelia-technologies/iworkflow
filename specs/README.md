@@ -24,9 +24,9 @@
    ```
 
 ### Key types (short)
-- `WorkflowSpec`: `steps` (required), optional `params`, `schemas`, `output`, `execution`.
+- `WorkflowSpec`: `steps` (required), optional `params`, `schemas`, `output`, `artifacts`, `execution`.
 - `Step`:
-  - `agent`: `prompt`, optional `schema`, `prefer`, `role`, `model`, `sandbox`, `tools`, `gate`, `instructions`.
+  - `agent`: `prompt`, optional `schema`, `prefer`, `role`, `model`, `sandbox`, `tools`, `gate`, `required`, `instructions`.
   - `parallel`: `agents` (array of AgentSpec).
   - `pipeline`: `items` (list or template), `stages` (AgentSpec list).
   - `loop`: `body` (steps), `until` (times/count/dry/budget/agent/vote), `max_iterations`, optional `collect`.

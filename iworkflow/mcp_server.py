@@ -72,6 +72,14 @@ def _resolve_catalog(catalog_root: str | None, cwd: str | None) -> ToolCatalog |
     return load_project_catalog(root)
 
 
+def _resolve_journal_dir(journal_dir: str, cwd: str | None) -> str:
+    """Resolve relative journal dirs against the workflow cwd, not MCP server cwd."""
+    path = Path(journal_dir)
+    if path.is_absolute() or cwd is None:
+        return str(path)
+    return str(Path(cwd) / path)
+
+
 def _default_runner(
     run_id: str,
     *,
@@ -245,10 +253,11 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
     `runner` is injectable so tests pass a FakeProvider-backed Runner (no quota).
     """
     rid = _resolve_run_id(run_id, goal, params)
+    resolved_journal_dir = _resolve_journal_dir(journal_dir, cwd)
     r = runner or _default_runner(
         rid, cwd=cwd, timeout_s=timeout_s, caps=caps,
         catalog=_resolve_catalog(catalog_root, cwd),
-        journal_dir=journal_dir,
+        journal_dir=resolved_journal_dir,
     )
     limits = Limits(
         allow_tools=allow_tools,
@@ -265,6 +274,7 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
             raise WorkflowError("must provide spec, workflow, or goal")
         result = _maybe_degrade_fan_synthesize(result)
         result["run_id"] = rid
+        result["journal_dir"] = resolved_journal_dir
         return result
     except Exception as e:
         try:
@@ -290,6 +300,7 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
                          allow_tools: bool = True) -> dict[str, Any]:
     """Start a workflow in the background; poll/stream with run_id."""
     rid = _resolve_run_id(run_id, goal, params)
+    resolved_journal_dir = _resolve_journal_dir(journal_dir, cwd)
     existing = _jobs.get(rid)
     if existing is not None and not existing.done():
         return {"run_id": rid, "status": "running"}
@@ -318,7 +329,7 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
         return await run_workflow(
             goal, workflow=workflow, params=params, spec=spec, run_id=rid,
             recipe_dir=recipe_dir, runner=runner, cwd=cwd, timeout_s=timeout_s,
-            caps=caps, catalog_root=catalog_root, journal_dir=journal_dir,
+            caps=caps, catalog_root=catalog_root, journal_dir=resolved_journal_dir,
             allow_tools=allow_tools,
             preflight_checked=raw_spec is not None,
         )
@@ -342,11 +353,12 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
             del _jobs[rid]
 
     task.add_done_callback(_cleanup)
-    return {"run_id": rid, "status": "started"}
+    return {"run_id": rid, "status": "started", "journal_dir": resolved_journal_dir}
 
 
-async def workflow_poll(run_id: str, journal_dir: str = ".iworkflow") -> dict[str, Any]:
+async def workflow_poll(run_id: str, journal_dir: str = ".iworkflow", cwd: str | None = None) -> dict[str, Any]:
     """Poll a background workflow started via `workflow_start`."""
+    journal_dir = _resolve_journal_dir(journal_dir, cwd)
     status, result, hint = _workflow_status(run_id, journal_dir)
     payload: dict[str, Any] = {
         "run_id": run_id,
@@ -366,6 +378,7 @@ async def workflow_stream(
     run_id: str,
     *,
     journal_dir: str = ".iworkflow",
+    cwd: str | None = None,
     after: int = 0,
     block_s: float = 0.0,
     limit: int = 50,
@@ -375,6 +388,7 @@ async def workflow_stream(
     Call repeatedly with the returned `next_after` cursor. Set `block_s>0` to wait
     for new events (long-poll) instead of returning immediately when caught up.
     """
+    journal_dir = _resolve_journal_dir(journal_dir, cwd)
     deadline = time.time() + max(block_s, 0.0)
     cursor = after
     events: list[dict] = []
@@ -459,12 +473,14 @@ def main() -> None:
         """Start a long-running workflow without blocking the MCP client.
 
         Prefer this over `iworkflow_workflow` when the run may exceed ~30s.
-        Follow with `iworkflow_workflow_stream` (incremental) or
-        `iworkflow_workflow_poll` (snapshot).
+        Returns the resolved `journal_dir`; pass it to stream/poll if another MCP
+        process may handle those calls. Follow with `iworkflow_workflow_stream`
+        (incremental) or `iworkflow_workflow_poll` (snapshot).
 
         `caps` sets per-provider concurrency, e.g. {"codex": 2, "gemini": 2}.
         `catalog_root` loads MCP/skills/commands from a repo (same as CLI catalog).
         `recipe_dir` adds host recipes from `.iworkflow/recipes` or a custom path.
+        Relative `journal_dir` values resolve against `cwd` when `cwd` is provided.
 
         Recipes/specs with `execution.worktree` require a Git repository with a
         clean working tree before start. Specs with `execution.gh_required` also
@@ -501,9 +517,13 @@ def main() -> None:
     async def iworkflow_workflow_poll(
         run_id: str,
         journal_dir: str = ".iworkflow",
+        cwd: str | None = None,
     ) -> dict[str, Any]:
-        """Poll a workflow started with iworkflow_workflow_start."""
-        return await workflow_poll(run_id, journal_dir=journal_dir)
+        """Poll a workflow started with iworkflow_workflow_start.
+
+        If start returned an absolute `journal_dir`, pass it here. If passing a
+        relative `journal_dir`, also pass the same `cwd` used at start."""
+        return await workflow_poll(run_id, journal_dir=journal_dir, cwd=cwd)
 
     @server.tool()
     async def iworkflow_workflow_stream(
@@ -512,15 +532,18 @@ def main() -> None:
         block_s: float = 5.0,
         limit: int = 50,
         journal_dir: str = ".iworkflow",
+        cwd: str | None = None,
     ) -> dict[str, Any]:
         """Stream workflow progress from events.jsonl (SSE-like incremental poll).
 
         Returns new events since `after` (line offset). Use the returned
         `next_after` on the next call. Set `block_s` to long-poll for new events
         (default 5s). Terminal statuses include `done`, `error`,
-        `failed_to_start`, and `not_found`; `result` is included when available."""
+        `failed_to_start`, and `not_found`; `result` is included when available.
+        If start returned an absolute `journal_dir`, pass it here. If passing a
+        relative `journal_dir`, also pass the same `cwd` used at start."""
         return await workflow_stream(
-            run_id, journal_dir=journal_dir, after=after,
+            run_id, journal_dir=journal_dir, cwd=cwd, after=after,
             block_s=block_s, limit=limit,
         )
 

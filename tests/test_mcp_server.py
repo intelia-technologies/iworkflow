@@ -9,12 +9,20 @@ from iworkflow.mcp_server import (
     _maybe_degrade_fan_synthesize,
     _read_events_since,
     _resolve_catalog,
+    _resolve_journal_dir,
     _resolve_run_id,
     run_workflow,
     workflow_start,
     workflow_stream,
 )
 from iworkflow import FakeProvider, Runner
+
+
+def test_resolve_journal_dir_relative_to_cwd(tmp_path):
+    assert _resolve_journal_dir(".iworkflow", str(tmp_path)) == str(tmp_path / ".iworkflow")
+    absolute = tmp_path / "custom-journal"
+    assert _resolve_journal_dir(str(absolute), "/elsewhere") == str(absolute)
+    assert _resolve_journal_dir(".iworkflow", None) == ".iworkflow"
 
 
 def test_resolve_run_id_hashes_default_mcp():
@@ -252,6 +260,7 @@ def test_workflow_start_runs_preflight_once(monkeypatch, tmp_path):
             journal_dir=str(tmp_path),
         )
         assert started["status"] == "started"
+        assert started["journal_dir"] == str(tmp_path)
         await asyncio.sleep(0.05)
         assert calls["n"] == 1
 

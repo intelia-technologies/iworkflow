@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -254,6 +255,7 @@ class AgentSpec:
     gate: dict[str, Any] | None = None
     timeout_s: int | None = None
     heartbeat_interval_s: int | None = None
+    required: bool = True
 
 
 @dataclass
@@ -287,6 +289,7 @@ class WorkflowSpec:
     description: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
     output: Any = None
+    artifacts: list[Any] = field(default_factory=list)
     schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
     limits: Limits = field(default_factory=Limits)
     execution: dict[str, Any] = field(default_factory=dict)
@@ -307,6 +310,7 @@ class WorkflowSpec:
             description=spec.get("description"),
             params=spec.get("params") or {},
             output=spec.get("output"),
+            artifacts=spec.get("artifacts") or [],
             schemas={**DEFAULT_SCHEMAS, **(spec.get("schemas") or {})},
             limits=limits,
             execution=spec.get("execution") or {},
@@ -347,6 +351,7 @@ def _parse_agent(d: dict[str, Any], fallback_id: str, limits: Limits) -> AgentSp
         gate=d.get("gate"),
         timeout_s=d.get("timeout_s"),
         heartbeat_interval_s=d.get("heartbeat_interval_s"),
+        required=bool(d.get("required", True)),
     )
 
 
@@ -611,6 +616,8 @@ class _Executor:
         except _Abort as a:
             status, aborted_at = "ABORTED", a.step_id
         out = render(self.wf.output, self.ctx) if self.wf.output is not None else None
+        if status == "DONE":
+            self._validate_artifacts()
         bundle = {
             "status": status,
             "name": self.wf.name,
@@ -620,6 +627,33 @@ class _Executor:
         if aborted_at:
             bundle["aborted_at"] = aborted_at
         return bundle
+
+    def _validate_artifacts(self) -> None:
+        if not self.wf.artifacts:
+            return
+        root = Path(self.runner.default_cwd or os.getcwd())
+        missing: list[str] = []
+        for artifact in self.wf.artifacts:
+            if isinstance(artifact, str):
+                raw_path = artifact
+                kind = "file"
+            elif isinstance(artifact, dict):
+                raw_path = artifact.get("path")
+                kind = artifact.get("type", "file")
+            else:
+                continue
+            rendered = render(raw_path, self.ctx)
+            if not isinstance(rendered, str) or not rendered:
+                missing.append(str(raw_path))
+                continue
+            path = Path(rendered)
+            if not path.is_absolute():
+                path = root / path
+            exists = path.is_dir() if kind == "dir" else path.is_file()
+            if not exists:
+                missing.append(str(path))
+        if missing:
+            raise WorkflowError("required workflow artifact(s) missing: " + ", ".join(missing))
 
     # --- schema / agent helpers ------------------------------------------
     def _schema(self, schema: str | dict[str, Any] | None) -> dict[str, Any] | None:
@@ -671,6 +705,9 @@ class _Executor:
         assert a is not None
         res = await self._agent_call(a, ctx, label)
         out = self._result(res, kind="agent")
+        if not res.ok and a.required:
+            attempts = ", ".join(f"{x.provider}:{x.outcome}" for x in res.attempts)
+            raise WorkflowError(f"agent step {step.id!r} exhausted without a result ({attempts})")
         if a.gate and res.ok:
             field_name = a.gate.get("field")
             value = res.value.get(field_name) if isinstance(res.value, dict) and field_name \
@@ -884,7 +921,8 @@ class _Executor:
                           prefer=p.get("prefer"), model=p.get("model"),
                           models=p.get("models"), role=p.get("role"),
                           timeout_s=p.get("timeout_s"),
-                          heartbeat_interval_s=p.get("heartbeat_interval_s")),
+                          heartbeat_interval_s=p.get("heartbeat_interval_s"),
+                          required=bool(p.get("required", True))),
                 loop_ctx, f"{label}#decide{iteration}")
             verdict = res.value.get(field_name) if isinstance(res.value, dict) else None
             return res.value, (res.ok and verdict in stop_set)
@@ -901,7 +939,8 @@ class _Executor:
                 AgentSpec(id=f"vote{i}", prompt=prompt + lens, schema=schema,
                           prefer=p.get("prefer"), model=p.get("model"),
                           models=p.get("models"), timeout_s=p.get("timeout_s"),
-                          heartbeat_interval_s=p.get("heartbeat_interval_s")),
+                          heartbeat_interval_s=p.get("heartbeat_interval_s"),
+                          required=bool(p.get("required", True))),
                 loop_ctx, f"{label}#vote{iteration}.{i}")
 
         results = await self.runner.parallel([voter(i) for i in range(count)])

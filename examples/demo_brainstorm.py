@@ -104,7 +104,11 @@ class DemoBrainstormProvider(Provider):
 
         if "Write the final brainstorm" in prompt:
             print("[SIMULATOR] Phase 6: Writing brainstorm specification document...")
-            return "Successfully generated and committed brainstorm.md in new branch."
+            if cwd:
+                artifact = Path(cwd) / "openspec/changes/feature-x/brainstorm.md"
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_text("# Brainstorm: feature-x\n", encoding="utf-8")
+            return "Successfully generated brainstorm.md in new branch."
 
         if "Update the wiki" in prompt:
             print("[SIMULATOR] Phase 7: Updating thoughts/shared/wiki/...")
@@ -130,8 +134,10 @@ async def main() -> None:
     print("Running INTERACTIVE BRAINSTORM Recipe Simulation")
     print("==================================================")
 
-    journal_dir = ".iworkflow_brainstorm_demo"
-    shutil.rmtree(journal_dir, ignore_errors=True)
+    demo_root = Path(".iworkflow_brainstorm_demo_root")
+    journal_dir = str(demo_root / ".iworkflow")
+    shutil.rmtree(demo_root, ignore_errors=True)
+    demo_root.mkdir(parents=True)
 
     if args.live:
         providers = {
@@ -148,6 +154,7 @@ async def main() -> None:
         providers=providers,
         caps={"codex": 2, "gemini": 2, "claude": 2},
         journal_dir=journal_dir,
+        default_cwd=str(demo_root),
     )
 
     try:
@@ -170,7 +177,7 @@ async def main() -> None:
         for sid, val in result["steps"].items():
             print(f"  • {sid:<25}: {str(val)[:80]}...")
     finally:
-        shutil.rmtree(journal_dir, ignore_errors=True)
+        shutil.rmtree(demo_root, ignore_errors=True)
 
 
 if __name__ == "__main__":

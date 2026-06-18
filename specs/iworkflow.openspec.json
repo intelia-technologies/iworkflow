@@ -16,46 +16,122 @@
       "type": "object",
       "description": "Safety policy (optional; omit to use engine defaults).",
       "properties": {
-        "allowed_sandboxes": { "type": "array", "items": { "type": "string" } },
-        "allow_tools": { "type": "boolean" },
-        "max_total_agent_calls": { "type": "integer", "minimum": 1 },
-        "max_parallel_width": { "type": "integer", "minimum": 1 },
-        "max_pipeline_items": { "type": "integer", "minimum": 1 },
-        "max_loop_depth": { "type": "integer", "minimum": 1 },
-        "max_loop_iterations": { "type": "integer", "minimum": 1 },
-        "max_supervisions": { "type": "integer", "minimum": 0 }
+        "allowed_sandboxes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_tools": {
+          "type": "boolean"
+        },
+        "max_total_agent_calls": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_parallel_width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_pipeline_items": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_loop_depth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_loop_iterations": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_supervisions": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     },
     "AgentSpec": {
       "type": "object",
-      "required": ["id", "prompt"],
+      "required": [
+        "id",
+        "prompt"
+      ],
       "properties": {
-        "id": { "type": "string", "description": "Agent id (unique in its scope)." },
-        "prompt": { "type": "string", "description": "Template rendered against the run context." },
+        "id": {
+          "type": "string",
+          "description": "Agent id (unique in its scope)."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Template rendered against the run context."
+        },
         "schema": {
           "description": "Output schema: name or inline JSON Schema.",
           "oneOf": [
-            { "type": "string" },
-            { "$ref": "#/types/JsonSchema" }
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/types/JsonSchema"
+            }
           ]
         },
-        "prefer": { "type": "array", "items": { "type": "string" }, "description": "Provider preference order." },
-        "role": { "type": "string", "description": "Optional role hint for routing." },
-        "model": { "type": "string", "description": "Provider/model override." },
-        "sandbox": { "type": "string", "description": "Sandbox name (default read-only)." },
-        "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool allowlist (honored only if policy allow_tools=true)." },
-        "timeout_s": { "type": "integer", "description": "Max duration for this agent call.", "default": 300 },
-        "heartbeat_interval_s": { "type": "integer", "description": "Expected frequency of progress updates.", "default": 60 },
+        "prefer": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Provider preference order."
+        },
+        "role": {
+          "type": "string",
+          "description": "Optional role hint for routing."
+        },
+        "model": {
+          "type": "string",
+          "description": "Provider/model override."
+        },
+        "sandbox": {
+          "type": "string",
+          "description": "Sandbox name (default read-only)."
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tool allowlist (honored only if policy allow_tools=true)."
+        },
+        "timeout_s": {
+          "type": "integer",
+          "description": "Max duration for this agent call.",
+          "default": 300
+        },
+        "heartbeat_interval_s": {
+          "type": "integer",
+          "description": "Expected frequency of progress updates.",
+          "default": 60
+        },
         "gate": {
           "type": "object",
           "description": "Abort guard evaluated on the agent result.",
           "properties": {
-            "field": { "type": "string" },
+            "field": {
+              "type": "string"
+            },
             "abort_on": {
               "oneOf": [
-                { "type": "string" },
-                { "type": "array", "items": { "type": "string" } }
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
               ]
             }
           },
@@ -65,11 +141,25 @@
           "type": "object",
           "description": "Planner hints for sub-agents (worktree/branch/gh). Not enforced by the engine.",
           "properties": {
-            "run_in_worktree": { "type": "string", "description": "\"current\" or worktree name." },
-            "branch": { "type": "string", "description": "\"reuse\", \"none\", or \"new:<name>\"." },
-            "gh": { "type": "string", "description": "GitHub CLI guidance, e.g., gh pr create …" }
+            "run_in_worktree": {
+              "type": "string",
+              "description": "\"current\" or worktree name."
+            },
+            "branch": {
+              "type": "string",
+              "description": "\"reuse\", \"none\", or \"new:<name>\"."
+            },
+            "gh": {
+              "type": "string",
+              "description": "GitHub CLI guidance, e.g., gh pr create …"
+            }
           },
           "additionalProperties": true
+        },
+        "required": {
+          "type": "boolean",
+          "description": "When true (default), an exhausted sequential agent fails the workflow instead of yielding null.",
+          "default": true
         }
       },
       "additionalProperties": false
@@ -78,23 +168,258 @@
       "type": "object",
       "description": "Loop stop condition (exactly one key).",
       "oneOf": [
-        { "properties": { "times": { "type": "integer", "minimum": 0 } }, "required": ["times"], "additionalProperties": false },
-        { "properties": { "count": { "type": "object", "properties": { "target": { "type": "integer", "minimum": 0 } }, "required": ["target"], "additionalProperties": false } }, "required": ["count"], "additionalProperties": false },
-        { "properties": { "dry": { "type": "object", "properties": { "rounds": { "type": "integer", "minimum": 1 } }, "required": ["rounds"], "additionalProperties": false } }, "required": ["dry"], "additionalProperties": false },
-        { "properties": { "budget": { "type": "object", "properties": { "output_tokens": { "type": "integer", "minimum": 0 } }, "required": ["output_tokens"], "additionalProperties": false } }, "required": ["budget"], "additionalProperties": false },
-        { "properties": { "agent": { "type": "object", "properties": { "prompt": { "type": "string" }, "stop_when": { "oneOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] }, "schema": { "oneOf": [ { "type": "string" }, { "$ref": "#/types/JsonSchema" } ] }, "field": { "type": "string" }, "prefer": { "type": "array", "items": { "type": "string" } }, "model": { "type": "string" }, "role": { "type": "string" }, "lenses": { "type": "array", "items": { "type": "string" } } }, "required": ["prompt"], "additionalProperties": true } }, "required": ["agent"], "additionalProperties": false },
-        { "properties": { "vote": { "type": "object", "properties": { "prompt": { "type": "string" }, "count": { "type": "integer", "minimum": 1 }, "threshold": { "type": "integer", "minimum": 1 }, "lenses": { "type": "array", "items": { "type": "string" } }, "schema": { "oneOf": [ { "type": "string" }, { "$ref": "#/types/JsonSchema" } ] }, "field": { "type": "string" }, "stop_when": { "oneOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] }, "prefer": { "type": "array", "items": { "type": "string" } }, "model": { "type": "string" }, "role": { "type": "string" } }, "required": ["prompt"], "additionalProperties": true } }, "required": ["vote"], "additionalProperties": false }
+        {
+          "properties": {
+            "times": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "times"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "count": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "target"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "count"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "dry": {
+              "type": "object",
+              "properties": {
+                "rounds": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "rounds"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "dry"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "budget": {
+              "type": "object",
+              "properties": {
+                "output_tokens": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "output_tokens"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "budget"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "agent": {
+              "type": "object",
+              "properties": {
+                "prompt": {
+                  "type": "string"
+                },
+                "stop_when": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "$ref": "#/types/JsonSchema"
+                    }
+                  ]
+                },
+                "field": {
+                  "type": "string"
+                },
+                "prefer": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "model": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "lenses": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "timeout_s": {
+                  "type": "integer"
+                },
+                "heartbeat_interval_s": {
+                  "type": "integer"
+                },
+                "required": {
+                  "type": "boolean",
+                  "default": true
+                }
+              },
+              "required": [
+                "prompt"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "agent"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "vote": {
+              "type": "object",
+              "properties": {
+                "prompt": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "threshold": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "lenses": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "$ref": "#/types/JsonSchema"
+                    }
+                  ]
+                },
+                "field": {
+                  "type": "string"
+                },
+                "stop_when": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "prefer": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "model": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "timeout_s": {
+                  "type": "integer"
+                },
+                "heartbeat_interval_s": {
+                  "type": "integer"
+                },
+                "required": {
+                  "type": "boolean",
+                  "default": true
+                }
+              },
+              "required": [
+                "prompt"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "vote"
+          ],
+          "additionalProperties": false
+        }
       ]
     },
     "Collect": {
       "type": "object",
       "properties": {
-        "from": { "type": "string" },
-        "path": { "type": "string" },
-        "where": { "type": "string" },
-        "dedup_by": { "type": "string" }
+        "from": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "where": {
+          "type": "string"
+        },
+        "dedup_by": {
+          "type": "string"
+        }
       },
-      "required": ["from"],
+      "required": [
+        "from"
+      ],
       "additionalProperties": false
     },
     "When": {
@@ -107,92 +432,261 @@
         {
           "title": "agent",
           "type": "object",
-          "required": ["id", "kind", "prompt"],
+          "required": [
+            "id",
+            "kind",
+            "prompt"
+          ],
           "properties": {
-            "id": { "type": "string" },
-            "kind": { "const": "agent" },
-            "needs": { "type": "array", "items": { "type": "string" } },
-            "agent": { "$ref": "#/types/AgentSpec" },
-            "schema": { "oneOf": [ { "type": "string" }, { "$ref": "#/types/JsonSchema" } ] },
-            "prompt": { "type": "string" },
-            "prefer": { "type": "array", "items": { "type": "string" } },
-            "role": { "type": "string" },
-            "model": { "type": "string" },
-            "sandbox": { "type": "string" },
-            "tools": { "type": "array", "items": { "type": "string" } },
-            "timeout_s": { "type": "integer" },
-            "heartbeat_interval_s": { "type": "integer" },
-            "gate": { "$ref": "#/types/AgentSpec/properties/gate" },
-            "instructions": { "$ref": "#/types/AgentSpec/properties/instructions" }
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "agent"
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "agent": {
+              "$ref": "#/types/AgentSpec"
+            },
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/types/JsonSchema"
+                }
+              ]
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "prefer": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "role": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "sandbox": {
+              "type": "string"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "timeout_s": {
+              "type": "integer"
+            },
+            "heartbeat_interval_s": {
+              "type": "integer"
+            },
+            "gate": {
+              "$ref": "#/types/AgentSpec/properties/gate"
+            },
+            "instructions": {
+              "$ref": "#/types/AgentSpec/properties/instructions"
+            },
+            "required": {
+              "type": "boolean",
+              "default": true
+            }
           },
           "additionalProperties": false
         },
         {
           "title": "parallel",
           "type": "object",
-          "required": ["id", "kind", "agents"],
+          "required": [
+            "id",
+            "kind",
+            "agents"
+          ],
           "properties": {
-            "id": { "type": "string" },
-            "kind": { "const": "parallel" },
-            "needs": { "type": "array", "items": { "type": "string" } },
-            "agents": { "type": "array", "items": { "$ref": "#/types/AgentSpec" }, "minItems": 1 }
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "parallel"
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/types/AgentSpec"
+              },
+              "minItems": 1
+            }
           },
           "additionalProperties": false
         },
         {
           "title": "pipeline",
           "type": "object",
-          "required": ["id", "kind", "items", "stages"],
+          "required": [
+            "id",
+            "kind",
+            "items",
+            "stages"
+          ],
           "properties": {
-            "id": { "type": "string" },
-            "kind": { "const": "pipeline" },
-            "needs": { "type": "array", "items": { "type": "string" } },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "pipeline"
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "items": {
               "oneOf": [
-                { "type": "array" },
-                { "type": "string" }
+                {
+                  "type": "array"
+                },
+                {
+                  "type": "string"
+                }
               ]
             },
-            "stages": { "type": "array", "items": { "$ref": "#/types/AgentSpec" }, "minItems": 1 }
+            "stages": {
+              "type": "array",
+              "items": {
+                "$ref": "#/types/AgentSpec"
+              },
+              "minItems": 1
+            }
           },
           "additionalProperties": false
         },
         {
           "title": "loop",
           "type": "object",
-          "required": ["id", "kind", "body", "until", "max_iterations"],
+          "required": [
+            "id",
+            "kind",
+            "body",
+            "until",
+            "max_iterations"
+          ],
           "properties": {
-            "id": { "type": "string" },
-            "kind": { "const": "loop" },
-            "needs": { "type": "array", "items": { "type": "string" } },
-            "body": { "type": "array", "items": { "$ref": "#/types/Step" }, "minItems": 1 },
-            "until": { "$ref": "#/types/Until" },
-            "max_iterations": { "type": "integer", "minimum": 1 },
-            "collect": { "$ref": "#/types/Collect" }
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "loop"
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "body": {
+              "type": "array",
+              "items": {
+                "$ref": "#/types/Step"
+              },
+              "minItems": 1
+            },
+            "until": {
+              "$ref": "#/types/Until"
+            },
+            "max_iterations": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "collect": {
+              "$ref": "#/types/Collect"
+            }
           },
           "additionalProperties": false
         },
         {
           "title": "supervisor",
           "type": "object",
-          "required": ["id", "kind", "prompt"],
+          "required": [
+            "id",
+            "kind",
+            "prompt"
+          ],
           "properties": {
-            "id": { "type": "string" },
-            "kind": { "const": "supervisor" },
-            "needs": { "type": "array", "items": { "type": "string" } },
-            "watch": { "type": "array", "items": { "type": "string" } },
-            "when": { 
-              "description": "Guard condition. Can check steps_info.sid.timeout == true.",
-              "$ref": "#/types/When" 
+            "id": {
+              "type": "string"
             },
-            "prompt": { "type": "string" },
-            "prefer": { "type": "array", "items": { "type": "string" } },
-            "role": { "type": "string" },
-            "model": { "type": "string" },
-            "sandbox": { "type": "string" },
-            "tools": { "type": "array", "items": { "type": "string" } },
-            "timeout_s": { "type": "integer" },
-            "heartbeat_interval_s": { "type": "integer" }
+            "kind": {
+              "const": "supervisor"
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "watch": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "when": {
+              "description": "Guard condition. Can check steps_info.sid.timeout == true.",
+              "$ref": "#/types/When"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "prefer": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "role": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "sandbox": {
+              "type": "string"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "timeout_s": {
+              "type": "integer"
+            },
+            "heartbeat_interval_s": {
+              "type": "integer"
+            },
+            "required": {
+              "type": "boolean",
+              "default": true
+            }
           },
           "additionalProperties": false
         }
@@ -200,24 +694,97 @@
     },
     "WorkflowSpec": {
       "type": "object",
-      "required": ["steps"],
+      "required": [
+        "steps"
+      ],
       "properties": {
-        "name": { "type": "string" },
-        "description": { "type": "string" },
-        "params": { "type": "object", "additionalProperties": true },
-        "schemas": { "type": "object", "additionalProperties": { "$ref": "#/types/JsonSchema" } },
-        "output": { "oneOf": [ { "type": "string" }, { "type": "object", "additionalProperties": true } ] },
-        "steps": { "type": "array", "items": { "$ref": "#/types/Step" }, "minItems": 1 },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "schemas": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/types/JsonSchema"
+          }
+        },
+        "output": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "additionalProperties": true
+            }
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/types/Step"
+          },
+          "minItems": 1
+        },
         "execution": {
           "type": "object",
           "description": "Planner hints for git/worktree/gh (not enforced by the engine).",
           "properties": {
-            "worktree": { "type": "string", "description": "\"current\", \"new:<name>\", or \"existing:<name>\"." },
-            "branch": { "type": "string", "description": "\"reuse\", \"none\", or \"new:<name>\"." },
-            "checkout": { "type": "boolean", "default": true },
-            "gh_required": { "type": "boolean", "default": false }
+            "worktree": {
+              "type": "string",
+              "description": "\"current\", \"new:<name>\", or \"existing:<name>\"."
+            },
+            "branch": {
+              "type": "string",
+              "description": "\"reuse\", \"none\", or \"new:<name>\"."
+            },
+            "checkout": {
+              "type": "boolean",
+              "default": true
+            },
+            "gh_required": {
+              "type": "boolean",
+              "default": false
+            }
           },
           "additionalProperties": true
+        },
+        "artifacts": {
+          "type": "array",
+          "description": "Required output artifacts validated before DONE is returned. Relative paths resolve against workflow cwd.",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "path"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "file",
+                      "dir"
+                    ],
+                    "default": "file"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
         }
       },
       "additionalProperties": false
@@ -225,14 +792,44 @@
     "WorkflowRunBundle": {
       "type": "object",
       "properties": {
-        "status": { "type": "string", "enum": ["DONE", "ABORTED", "ERROR"] },
-        "name": { "type": ["string", "null"] },
-        "output": { "nullable": true },
-        "steps": { "type": "object", "additionalProperties": true },
-        "aborted_at": { "type": ["string", "null"] },
-        "run_id": { "type": ["string", "null"] }
+        "status": {
+          "type": "string",
+          "enum": [
+            "DONE",
+            "ABORTED",
+            "ERROR"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output": {
+          "nullable": true
+        },
+        "steps": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "aborted_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       },
-      "required": ["status", "steps"],
+      "required": [
+        "status",
+        "steps"
+      ],
       "additionalProperties": true
     }
   },
@@ -242,7 +839,10 @@
       "input": {
         "type": "object",
         "properties": {
-          "recipe_dir": { "type": "string", "description": "Host recipe dir (default .iworkflow/recipes)." }
+          "recipe_dir": {
+            "type": "string",
+            "description": "Host recipe dir (default .iworkflow/recipes)."
+          }
         },
         "additionalProperties": false
       },
@@ -253,16 +853,27 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["name"],
+              "required": [
+                "name"
+              ],
               "properties": {
-                "name": { "type": "string" },
-                "description": { "type": "string" },
-                "params": { "type": "object", "additionalProperties": true }
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "params": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
               }
             }
           }
         },
-        "required": ["workflows"],
+        "required": [
+          "workflows"
+        ],
         "additionalProperties": false
       }
     },
@@ -271,30 +882,72 @@
       "input": {
         "type": "object",
         "properties": {
-          "workflow": { "type": "string", "description": "Recipe name to run." },
-          "spec": { "$ref": "#/types/WorkflowSpec", "description": "Inline dynamic workflow spec." },
-          "goal": { "type": "string", "description": "Shortcut to fan_synthesize recipe." },
-          "params": { "type": "object", "additionalProperties": true },
-          "limits": { "$ref": "#/types/Limits" },
-          "caps": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 1 }, "description": "Per-provider concurrency caps." },
-          "run_id": { "type": "string" },
-          "journal_dir": { "type": "string" },
-          "recipe_dir": { "type": "string" }
+          "workflow": {
+            "type": "string",
+            "description": "Recipe name to run."
+          },
+          "spec": {
+            "$ref": "#/types/WorkflowSpec",
+            "description": "Inline dynamic workflow spec."
+          },
+          "goal": {
+            "type": "string",
+            "description": "Shortcut to fan_synthesize recipe."
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "limits": {
+            "$ref": "#/types/Limits"
+          },
+          "caps": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Per-provider concurrency caps."
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "journal_dir": {
+            "type": "string"
+          },
+          "recipe_dir": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       },
-      "output": { "$ref": "#/types/WorkflowRunBundle" }
+      "output": {
+        "$ref": "#/types/WorkflowRunBundle"
+      }
     },
     "workflows.start": {
       "summary": "Start a workflow asynchronously (non-blocking).",
-      "input": { "$ref": "#/actions/workflows.run/input" },
+      "input": {
+        "$ref": "#/actions/workflows.run/input"
+      },
       "output": {
         "type": "object",
         "properties": {
-          "run_id": { "type": "string" },
-          "status": { "type": "string", "enum": ["started", "unknown_done"] }
+          "run_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "started",
+              "unknown_done"
+            ]
+          }
         },
-        "required": ["run_id", "status"],
+        "required": [
+          "run_id",
+          "status"
+        ],
         "additionalProperties": false
       }
     },
@@ -303,22 +956,49 @@
       "input": {
         "type": "object",
         "properties": {
-          "run_id": { "type": "string" },
-          "after": { "type": "integer", "default": 0 },
-          "block_s": { "type": "number", "default": 5 }
+          "run_id": {
+            "type": "string"
+          },
+          "after": {
+            "type": "integer",
+            "default": 0
+          },
+          "block_s": {
+            "type": "number",
+            "default": 5
+          }
         },
-        "required": ["run_id"],
+        "required": [
+          "run_id"
+        ],
         "additionalProperties": false
       },
       "output": {
         "type": "object",
         "properties": {
-          "run_id": { "type": "string" },
-          "status": { "type": "string" },
-          "events": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
-          "next_after": { "type": "integer" }
+          "run_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "next_after": {
+            "type": "integer"
+          }
         },
-        "required": ["run_id", "status", "events", "next_after"],
+        "required": [
+          "run_id",
+          "status",
+          "events",
+          "next_after"
+        ],
         "additionalProperties": false
       }
     },
@@ -326,18 +1006,33 @@
       "summary": "Poll a workflow snapshot.",
       "input": {
         "type": "object",
-        "properties": { "run_id": { "type": "string" } },
-        "required": ["run_id"],
+        "properties": {
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
         "additionalProperties": false
       },
       "output": {
         "type": "object",
         "properties": {
-          "run_id": { "type": "string" },
-          "status": { "type": "string" },
-          "bundle": { "$ref": "#/types/WorkflowRunBundle" }
+          "run_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "bundle": {
+            "$ref": "#/types/WorkflowRunBundle"
+          }
         },
-        "required": ["run_id", "status"],
+        "required": [
+          "run_id",
+          "status"
+        ],
         "additionalProperties": true
       }
     },
@@ -346,20 +1041,38 @@
       "input": {
         "type": "object",
         "properties": {
-          "workflow": { "type": "string" },
-          "spec": { "$ref": "#/types/WorkflowSpec" },
-          "html_path": { "type": "string" },
-          "publish": { "type": "boolean", "default": false },
-          "mermaid": { "type": "boolean", "default": false }
+          "workflow": {
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/types/WorkflowSpec"
+          },
+          "html_path": {
+            "type": "string"
+          },
+          "publish": {
+            "type": "boolean",
+            "default": false
+          },
+          "mermaid": {
+            "type": "boolean",
+            "default": false
+          }
         },
         "additionalProperties": false
       },
       "output": {
         "type": "object",
         "properties": {
-          "html_path": { "type": "string" },
-          "publish_url": { "type": "string" },
-          "mermaid": { "type": "string" }
+          "html_path": {
+            "type": "string"
+          },
+          "publish_url": {
+            "type": "string"
+          },
+          "mermaid": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       }
@@ -370,7 +1083,11 @@
       "summary": "Multi-stage security audit (gate → parallel threat modeling → pipeline scans → looped remediation → supervisor).",
       "workflow": "complex_security_audit",
       "params": {
-        "modules": ["auth-service", "billing-core", "gateway-api"],
+        "modules": [
+          "auth-service",
+          "billing-core",
+          "gateway-api"
+        ],
         "codebase_description": "Payments + OAuth backend"
       }
     },
@@ -378,21 +1095,48 @@
       "summary": "Loop until a decider says STOP, collecting findings.",
       "spec": {
         "name": "loop_decider_demo",
-        "params": { "subject": "payments service" },
+        "params": {
+          "subject": "payments service"
+        },
         "steps": [
           {
             "id": "sweep",
             "kind": "loop",
             "max_iterations": 3,
-            "until": { "agent": { "prompt": "Found {{loop.collected}}. STOP when done.", "stop_when": "STOP", "prefer": ["gemini"] } },
-            "collect": { "from": "find", "path": "findings", "dedup_by": "title" },
+            "until": {
+              "agent": {
+                "prompt": "Found {{loop.collected}}. STOP when done.",
+                "stop_when": "STOP",
+                "prefer": [
+                  "gemini"
+                ]
+              }
+            },
+            "collect": {
+              "from": "find",
+              "path": "findings",
+              "dedup_by": "title"
+            },
             "body": [
               {
                 "id": "find",
                 "kind": "agent",
-                "schema": { "type": "object", "required": ["findings"], "properties": { "findings": { "type": "array" } } },
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "findings"
+                  ],
+                  "properties": {
+                    "findings": {
+                      "type": "array"
+                    }
+                  }
+                },
                 "prompt": "Find NEW issues in {{params.subject}} not in {{loop.collected}}; focus on {{loop.decision.missing}}.",
-                "prefer": ["codex", "gemini"]
+                "prefer": [
+                  "codex",
+                  "gemini"
+                ]
               }
             ]
           }

@@ -109,6 +109,7 @@ FAN_SYNTHESIZE: dict[str, Any] = {
              "prompt": "From a product/UX angle, answer concisely: {{params.goal}}"},
         ]},
         {"id": "synth", "kind": "agent", "needs": ["fan"],
+         "required": False,
          "prefer": ["cursor:composer-2.5", "codex", "gemini", "claude"],
          "prompt": "Synthesize ONE decisive answer to: {{params.goal}}\n"
                    "Inputs: {{steps.fan.value}}"},
@@ -474,6 +475,9 @@ BRAINSTORM: dict[str, Any] = {
             "when": {"path": "steps.phase5_dialogue_loop", "select": "stop_reason", "eq": "max_iterations"},
             "prompt": "The dialogue loop reached max iterations without locking the scope. Should we inject a manual triage step or continue as-is?"
         }
+    ],
+    "artifacts": [
+        {"path": "openspec/changes/{{params.change_name}}/brainstorm.md", "type": "file"}
     ],
     "output": {
         "spec_path": "openspec/changes/{{params.change_name}}/brainstorm.md",
