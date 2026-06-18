@@ -404,3 +404,58 @@ def test_safewriter_ignores_broken_pipe():
     assert stream.calls == 1
     safe.write("test")
     assert stream.calls == 1
+
+
+def test_dashboard_server_api_endpoints(tmp_path):
+    import socket
+    import urllib.request
+    import threading
+    import time
+    from iworkflow.dashboard import ThreadingHTTPServer, DashboardHandler
+
+    run_id = "test-dash-run"
+    run_dir = tmp_path / "runs" / run_id
+    run_dir.mkdir(parents=True)
+
+    (run_dir / "spec.json").write_text(json.dumps({"name": "test_wf", "steps": []}), encoding="utf-8")
+    (run_dir / "events.jsonl").write_text(json.dumps({"event": "route", "label": "a", "ts": 12345}) + "\n", encoding="utf-8")
+    (run_dir / "wf-steps.json").write_text(json.dumps({"a": "value_a"}), encoding="utf-8")
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("localhost", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    server = ThreadingHTTPServer(("localhost", port), DashboardHandler)
+    server.run_id = run_id
+    server.journal_dir = str(tmp_path)
+
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True
+    thread.start()
+
+    time.sleep(0.1)
+
+    try:
+        base_url = f"http://localhost:{port}"
+
+        html = urllib.request.urlopen(f"{base_url}/").read().decode("utf-8")
+        assert "<title>iworkflow Live Dashboard</title>" in html
+
+        cfg = json.loads(urllib.request.urlopen(f"{base_url}/api/config").read().decode("utf-8"))
+        assert cfg["run_id"] == run_id
+        assert cfg["journal_dir"] == str(tmp_path)
+
+        spec = json.loads(urllib.request.urlopen(f"{base_url}/api/spec").read().decode("utf-8"))
+        assert spec["name"] == "test_wf"
+
+        events = urllib.request.urlopen(f"{base_url}/api/events").read().decode("utf-8")
+        assert "route" in events
+
+        steps = json.loads(urllib.request.urlopen(f"{base_url}/api/steps").read().decode("utf-8"))
+        assert steps["a"] == "value_a"
+
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)

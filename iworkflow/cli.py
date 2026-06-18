@@ -336,6 +336,14 @@ def _cmd_graph(name: str | None, spec_path: str | None, html_path: str | None,
         except Exception:
             pass
 
+def _cmd_dashboard(run_id: str, journal_dir: str, port: int) -> None:
+    import os
+    from .mcp_server import _resolve_journal_dir
+    from .dashboard import start_dashboard
+    resolved_journal_dir = _resolve_journal_dir(journal_dir, os.getcwd())
+    start_dashboard(run_id, resolved_journal_dir, port=port)
+
+
 def _cmd_models(as_json: bool, update: bool = False) -> None:
     if update:
         import os
@@ -456,6 +464,11 @@ def main(argv: list[str] | None = None) -> None:
     p_graph.add_argument("--mermaid", action="store_true", help="print raw Mermaid to stdout instead of generating HTML (may break terminals that auto-render mermaid)")
     p_graph.add_argument("--recipe-dir", default=None, help="extra recipe directory")
 
+    p_dash = sub.add_parser("dashboard", help="launch the live dashboard web visualizer for a run")
+    p_dash.add_argument("run_id", help="the run_id to visualize")
+    p_dash.add_argument("--journal-dir", default=".iworkflow", help="path to the journal directory")
+    p_dash.add_argument("--port", type=int, default=8000, help="port to bind the dashboard server")
+
     p_models = sub.add_parser("models", help="list models exposed by each provider CLI")
     p_models.add_argument("--json", action="store_true", help="emit JSON catalog")
     p_models.add_argument("--update", action="store_true", help="update models catalog from remote repository")
@@ -488,6 +501,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_status(args.name, args.spec, args.run_id, args.journal_dir)
     elif args.cmd == "graph":
         _cmd_graph(args.name, args.spec, args.html, args.publish, args.recipe_dir, args.mermaid)
+    elif args.cmd == "dashboard":
+        _cmd_dashboard(args.run_id, args.journal_dir, args.port)
     elif args.cmd == "models":
         _cmd_models(args.json, args.update)
     elif args.cmd == "sessions":

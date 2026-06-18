@@ -338,6 +338,25 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
     effective_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
     rid = _resolve_run_id(run_id, goal, params)
     resolved_journal_dir = _resolve_journal_dir(journal_dir, effective_cwd)
+    
+    # Pre-write spec.json for the dashboard visualizer
+    try:
+        run_dir = Path(resolved_journal_dir) / "runs" / rid
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if spec is not None:
+            with (run_dir / "spec.json").open("w", encoding="utf-8") as fh:
+                json.dump(spec, fh, sort_keys=True, default=str)
+        elif workflow is not None:
+            raw_spec = get_recipe(workflow, recipe_dir)
+            with (run_dir / "spec.json").open("w", encoding="utf-8") as fh:
+                json.dump(raw_spec, fh, sort_keys=True, default=str)
+        elif goal is not None:
+            raw_spec = get_recipe("fan_synthesize", recipe_dir)
+            with (run_dir / "spec.json").open("w", encoding="utf-8") as fh:
+                json.dump(raw_spec, fh, sort_keys=True, default=str)
+    except Exception:
+        pass
+
     r = runner or _default_runner(
         rid, cwd=effective_cwd, timeout_s=timeout_s, caps=caps,
         catalog=_resolve_catalog(catalog_root, effective_cwd),
