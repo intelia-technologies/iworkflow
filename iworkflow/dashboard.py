@@ -62,11 +62,33 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <!-- Main Body -->
   <div class="flex flex-1 overflow-hidden relative">
     
-    <!-- Graph view -->
-    <main class="flex-1 overflow-auto p-8 flex items-center justify-center bg-slate-50 relative">
-      <div class="mermaid w-full max-w-4xl p-6 bg-white rounded-xl border border-slate-200 shadow-sm flex justify-center" id="mermaid-container">
-        <!-- Rendered SVG will land here -->
-        <div class="text-slate-400 text-sm animate-pulse">Cargando grafo del workflow...</div>
+    <!-- Graph view + visible run activity -->
+    <main class="flex-1 overflow-auto bg-slate-50 relative p-6">
+      <div class="max-w-6xl mx-auto min-h-full flex flex-col gap-4">
+        <div class="flex items-center justify-between text-sm text-slate-500 px-1">
+          <div>Haz click en un nodo para ver su detalle. La actividad del run aparece abajo en tiempo real.</div>
+          <div id="latest-output" class="font-mono text-xs text-slate-400 truncate max-w-xl">Esperando eventos...</div>
+        </div>
+
+        <section class="flex-1 min-h-[380px] flex items-center justify-center">
+          <div class="mermaid w-full max-w-4xl p-6 bg-white rounded-xl border border-slate-200 shadow-sm flex justify-center" id="mermaid-container">
+            <!-- Rendered SVG will land here -->
+            <div class="text-slate-400 text-sm animate-pulse">Cargando grafo del workflow...</div>
+          </div>
+        </section>
+
+        <section class="bg-slate-950 border border-slate-800 rounded-xl shadow-sm overflow-hidden">
+          <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+            <div>
+              <div class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Actividad del run</div>
+              <div class="text-xs text-slate-500">Salida reciente de agentes/comandos y eventos de estado.</div>
+            </div>
+            <div class="text-xs font-mono text-slate-500">events.jsonl</div>
+          </div>
+          <div id="run-log" class="h-56 overflow-y-auto p-4 space-y-2 font-mono text-xs text-slate-300">
+            <div class="text-slate-500 italic">Aún no hay eventos.</div>
+          </div>
+        </section>
       </div>
     </main>
 
@@ -383,6 +405,68 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       // 3. Calls count
       const calls = currentData.events.filter(e => e.event === 'dispatch').length;
       document.getElementById('hdr-calls').innerText = calls;
+
+      updateRunLog();
+    }
+
+    function updateRunLog() {
+      const log = document.getElementById('run-log');
+      const latest = document.getElementById('latest-output');
+      if (!log || !latest) return;
+
+      log.innerHTML = '';
+      const events = currentData.events.slice(-120);
+      if (events.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'text-slate-500 italic';
+        empty.innerText = 'Aún no hay eventos.';
+        log.appendChild(empty);
+        latest.innerText = 'Esperando eventos...';
+        return;
+      }
+
+      const lastOutput = [...events].reverse().find(e => e.event === 'output' && e.text);
+      const lastEvent = events[events.length - 1];
+      latest.innerText = lastOutput
+        ? `${lastOutput.label}: ${lastOutput.text.trim().slice(-100)}`
+        : `${lastEvent.label || 'run'}: ${lastEvent.event}`;
+
+      events.forEach(ev => {
+        const row = document.createElement('div');
+        row.className = 'grid grid-cols-[84px_180px_1fr] gap-3 items-start border-l-2 pl-3 py-1 ' +
+          (ev.event === 'done' ? 'border-emerald-500 text-emerald-100' :
+           ev.event === 'error' || ev.event === 'timeout' || ev.event === 'exhausted' ? 'border-red-500 text-red-100' :
+           ev.event === 'dispatch' ? 'border-blue-500 text-blue-100' : 'border-slate-700');
+
+        const time = document.createElement('div');
+        time.className = 'text-slate-500';
+        time.innerText = new Date(ev.ts * 1000).toLocaleTimeString();
+
+        const label = document.createElement('button');
+        label.className = 'text-left text-slate-300 hover:text-white underline-offset-2 hover:underline';
+        label.innerText = ev.label || 'run';
+        if (ev.label) label.onclick = () => window.selectStep(ev.label.split(':').pop().split('/').pop().split('#')[0]);
+
+        const msg = document.createElement('div');
+        msg.className = 'whitespace-pre-wrap break-words';
+        if (ev.event === 'output' && ev.text) {
+          msg.innerText = `[${ev.stream || 'stdout'}] ${ev.text.trimEnd()}`;
+        } else if (ev.event === 'dispatch') {
+          msg.innerText = `started ${ev.provider || ''}`.trim();
+        } else if (ev.event === 'done') {
+          msg.innerText = `done${ev.ms ? ` in ${ev.ms}ms` : ''}${ev.exit_code !== undefined ? ` exit=${ev.exit_code}` : ''}`;
+        } else if (ev.event === 'timeout') {
+          msg.innerText = `timeout${ev.timeout_s ? ` after ${ev.timeout_s}s` : ''}`;
+        } else {
+          msg.innerText = ev.event.toUpperCase();
+        }
+
+        row.appendChild(time);
+        row.appendChild(label);
+        row.appendChild(msg);
+        log.appendChild(row);
+      });
+      log.scrollTop = log.scrollHeight;
     }
 
     init();

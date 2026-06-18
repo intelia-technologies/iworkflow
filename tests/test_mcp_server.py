@@ -429,6 +429,9 @@ def test_dashboard_server_api_endpoints(tmp_path):
     assert "click ${s.id} call selectStep()" in HTML_DASHBOARD
     assert "click ${s.id} call selectStep;" not in HTML_DASHBOARD
     assert "class ${s.id} ${state};" not in HTML_DASHBOARD
+    assert 'id="run-log"' in HTML_DASHBOARD
+    assert "Actividad del run" in HTML_DASHBOARD
+    assert "Haz click en un nodo" in HTML_DASHBOARD
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("localhost", 0))
@@ -450,6 +453,8 @@ def test_dashboard_server_api_endpoints(tmp_path):
 
         html = urllib.request.urlopen(f"{base_url}/").read().decode("utf-8")
         assert "<title>iworkflow Live Dashboard</title>" in html
+        assert 'id="run-log"' in html
+        assert "Actividad del run" in html
 
         cfg = json.loads(urllib.request.urlopen(f"{base_url}/api/config").read().decode("utf-8"))
         assert cfg["run_id"] == run_id
