@@ -113,3 +113,134 @@ def run_summary(journal_dir: str = ".iworkflow",
         "output_tokens": sum(e.get("output_tokens") or 0 for e in done),
         "cost_usd": round(cost, 6) if cost else 0,
     }
+
+def print_run_status(recipe_name: str | None = None,
+                     spec_path: str | None = None,
+                     run_id: str | None = None,
+                     journal_dir: str = ".iworkflow") -> None:
+    import json
+    import time
+    
+    # 1. Resolve run_id and load events
+    run_id, events = _events(journal_dir, run_id)
+    if not run_id:
+        print("No runs found in journal directory.")
+        return
+
+    # 2. Try to load spec
+    spec = None
+    if spec_path:
+        try:
+            spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    elif recipe_name:
+        from .recipes import get_recipe
+        try:
+            spec = get_recipe(recipe_name)
+        except Exception:
+            pass
+
+    # Index events by step label
+    step_events = defaultdict(list)
+    for e in events:
+        label = e.get("label")
+        if label:
+            step_events[label].append(e)
+
+    # Helper to format a step state
+    def get_state(label: str) -> tuple[str, str]:
+        evs = step_events.get(label) or []
+        if not evs:
+            # Check if any parent or nested is running
+            nested_running = any(
+                step_events.get(k)[-1].get("event") == "started"
+                for k in step_events
+                if k.startswith(label + ":") or k.startswith(label + "#")
+            )
+            if nested_running:
+                return "▶", "\033[33mRUNNING\033[0m"
+            return " ", "PENDING"
+            
+        last = evs[-1]
+        evt = last.get("event")
+        prov = last.get("provider") or "auto"
+        model = last.get("model")
+        meta = f" ({prov}:{model})" if model else f" ({prov})"
+        
+        if evt == "started":
+            # Check for heartbeats
+            hb = [e for e in evs if e.get("event") == "heartbeat"]
+            if hb:
+                age = round(time.time() - hb[-1]["ts"])
+                return "▶", f"\033[33mRUNNING\033[0m{meta} (HB {age}s ago)"
+            return "▶", f"\033[33mRUNNING\033[0m{meta}"
+        elif evt in ("done", "resumed"):
+            status_text = "\033[32mDONE\033[0m" if evt == "done" else "\033[36mRESUMED\033[0m"
+            return "✔", f"{status_text}{meta}"
+        elif evt == "error":
+            return "✘", f"\033[31mERROR\033[0m{meta}: {last.get('error')}"
+        elif evt == "limited":
+            return "✘", f"\033[31mLIMITED\033[0m{meta} (Rate Limited)"
+        elif evt == "exhausted":
+            return "✘", "\033[31mEXHAUSTED\033[0m: All providers failed"
+        return " ", "UNKNOWN"
+
+    print(f"\nWorkflow Run Status: {run_id}")
+    print("=" * 60)
+
+    if spec:
+        steps = spec.get("steps") or []
+        for step in steps:
+            sid = step.get("id")
+            kind = step.get("kind")
+            
+            # Draw top-level step
+            symbol, status = get_state(sid)
+            print(f"[{symbol}] {sid:<24} ({kind:<10}) → {status}")
+            
+            # If parallel, list inner agents
+            if kind == "parallel":
+                for agent in (step.get("agents") or []):
+                    aid = agent.get("id")
+                    full_id = f"{sid}:{aid}"
+                    symbol_a, status_a = get_state(full_id)
+                    print(f"    ├── [{symbol_a}] {aid:<20} → {status_a}")
+            
+            # If pipeline, check mapped items
+            elif kind == "pipeline":
+                # Find mapped items from events
+                prefix = sid + ":"
+                pipeline_steps = sorted({
+                    k for k in step_events
+                    if k.startswith(prefix)
+                })
+                for psid in pipeline_steps:
+                    symbol_p, status_p = get_state(psid)
+                    label_short = psid[len(prefix):]
+                    print(f"    ├── [{symbol_p}] {label_short:<20} → {status_p}")
+                    
+            # If loop, check iterations
+            elif kind == "loop":
+                prefix = sid + "#"
+                loop_steps = sorted({
+                    k for k in step_events
+                    if k.startswith(prefix)
+                })
+                for lsid in loop_steps:
+                    symbol_l, status_l = get_state(lsid)
+                    label_short = lsid[len(prefix):]
+                    print(f"    ├── [{symbol_l}] Iter {label_short:<17} → {status_l}")
+    else:
+        # Chronological dump of known labels from events
+        print("No specification provided. Chronological step trace:")
+        known_labels = []
+        for e in events:
+            lbl = e.get("label")
+            if lbl and lbl not in known_labels:
+                known_labels.append(lbl)
+        for lbl in known_labels:
+            symbol, status = get_state(lbl)
+            print(f"[{symbol}] {lbl:<35} → {status}")
+
+    print("-" * 60)

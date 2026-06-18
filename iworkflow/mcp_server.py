@@ -447,6 +447,25 @@ def main() -> None:
         )
 
     @server.tool()
+    async def iworkflow_workflow_status(
+        run_id: str,
+        workflow: str | None = None,
+        spec_path: str | None = None,
+        journal_dir: str = ".iworkflow",
+    ) -> str:
+        """Get a human-readable ASCII progress status of a workflow run.
+
+        Shows which steps are completed, running (with heartbeats), failed, or pending."""
+        import io
+        from contextlib import redirect_stdout
+        from .stats import print_run_status
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            print_run_status(recipe_name=workflow, spec_path=spec_path, run_id=run_id, journal_dir=journal_dir)
+        return f.getvalue()
+
+    @server.tool()
     async def iworkflow_workflow_poll(
         run_id: str,
         journal_dir: str = ".iworkflow",

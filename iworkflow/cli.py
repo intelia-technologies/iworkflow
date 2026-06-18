@@ -185,6 +185,11 @@ def _cmd_unregister(root: str, *, codex: bool, claude: bool) -> None:
             print(f"skipped {name}: {e}")
 
 
+def _cmd_status(name: str | None, spec_path: str | None, run_id: str | None, journal_dir: str) -> None:
+    from .stats import print_run_status
+    print_run_status(recipe_name=name, spec_path=spec_path, run_id=run_id, journal_dir=journal_dir)
+
+
 def _cmd_stats(journal_dir: str, run_id: str | None) -> None:
     from .stats import provider_stats, run_summary
 
@@ -417,6 +422,12 @@ def main(argv: list[str] | None = None) -> None:
     p_stats.add_argument("--journal-dir", default=".iworkflow")
     p_stats.add_argument("--run-id", default=None)
 
+    p_status = sub.add_parser("status", help="show human-readable progress status of a run")
+    p_status.add_argument("name", nargs="?", default=None, help="recipe name (omit if --spec)")
+    p_status.add_argument("--spec", default=None, help="path to a declarative workflow spec JSON")
+    p_status.add_argument("--run-id", default=None)
+    p_status.add_argument("--journal-dir", default=".iworkflow")
+
     p_graph = sub.add_parser("graph", help="generate a visual diagram of a workflow (Mermaid or HTML)")
     p_graph.add_argument("name", nargs="?", default=None, help="recipe name (omit if --spec)")
     p_graph.add_argument("--spec", default=None, help="path to a declarative workflow spec JSON")
@@ -453,6 +464,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_run(args.name, args.goal, args.params, args.spec, args.run_id, args.recipe_dir, args.cwd, args.timeout, args.caps, args.journal_dir, args.allow_tools)
     elif args.cmd == "stats":
         _cmd_stats(args.journal_dir, args.run_id)
+    elif args.cmd == "status":
+        _cmd_status(args.name, args.spec, args.run_id, args.journal_dir)
     elif args.cmd == "graph":
         _cmd_graph(args.name, args.spec, args.html, args.publish, args.recipe_dir, args.mermaid)
     elif args.cmd == "models":
