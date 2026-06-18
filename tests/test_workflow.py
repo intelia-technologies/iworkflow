@@ -807,6 +807,54 @@ def test_write_paths_are_relative_to_workflow_cwd_inside_git_repo(tmp_path):
     assert out["status"] == "DONE"
 
 
+def test_command_step_executes_argv_successfully(tmp_path):
+    runner, _ = _fake_runner(tmp_path)
+    spec = {
+        "steps": [{
+            "id": "run_echo",
+            "kind": "command",
+            "command": ["echo", "hello-world-argv"],
+        }]
+    }
+    out = _run(run_spec(runner, spec))
+    assert out["status"] == "DONE"
+    cmd_res = out["steps"]["run_echo"]
+    assert cmd_res["exit_code"] == 0
+    assert "hello-world-argv" in cmd_res["stdout"]
+
+
+def test_command_step_executes_shell_with_env_override(tmp_path):
+    runner, _ = _fake_runner(tmp_path)
+    spec = {
+        "steps": [{
+            "id": "run_shell",
+            "kind": "command",
+            "command": "echo \"val=$MY_VAR\"",
+            "env": {"MY_VAR": "custom-env-value"},
+        }]
+    }
+    out = _run(run_spec(runner, spec))
+    assert out["status"] == "DONE"
+    cmd_res = out["steps"]["run_shell"]
+    assert cmd_res["exit_code"] == 0
+    assert "val=custom-env-value" in cmd_res["stdout"]
+
+
+def test_command_step_gate_aborts_on_failure(tmp_path):
+    runner, _ = _fake_runner(tmp_path)
+    spec = {
+        "steps": [{
+            "id": "run_fail",
+            "kind": "command",
+            "command": ["false"],
+            "gate": {"field": "exit_code", "abort_on": 1},
+        }]
+    }
+    out = _run(run_spec(runner, spec))
+    assert out["status"] == "ABORTED"
+    assert out["aborted_at"] == "run_fail" 
+
+
 def test_preflight_ignores_iworkflow_journal_dir(tmp_path):
     import subprocess
     from iworkflow import run_spec, Runner, FakeProvider, Limits

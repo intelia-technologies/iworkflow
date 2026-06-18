@@ -15,6 +15,7 @@ as a named recipe (see recipes.py) — the dynamic→confirmed→preset calcific
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -268,7 +269,7 @@ class Until:
 @dataclass
 class Step:
     id: str
-    kind: str                       # agent | parallel | pipeline | loop | supervisor
+    kind: str                       # agent | parallel | pipeline | loop | supervisor | command
     needs: list[str] = field(default_factory=list)
     agent: AgentSpec | None = None             # kind == agent
     agents: list[AgentSpec] = field(default_factory=list)   # kind == parallel
@@ -281,6 +282,11 @@ class Step:
     supervisor: AgentSpec | None = None        # kind == supervisor (the coordinator agent)
     watch: list[str] | None = None             # kind == supervisor (steps to expose; None=all)
     when: dict[str, Any] | None = None         # kind == supervisor (deviation guard; None=always)
+    command: str | list[str] | None = None                  # kind == command
+    cwd: str | None = None                                  # kind == command
+    env: dict[str, str] | None = None                       # kind == command
+    timeout_s: int | None = None                            # kind == command
+    gate: dict[str, Any] | None = None                      # kind == command
 
 
 @dataclass
@@ -318,7 +324,7 @@ class WorkflowSpec:
         )
 
 
-_VALID_KINDS = {"agent", "parallel", "pipeline", "loop", "supervisor"}
+_VALID_KINDS = {"agent", "parallel", "pipeline", "loop", "supervisor", "command"}
 _VALID_UNTIL = {"times", "count", "dry", "budget", "agent", "vote"}
 
 
@@ -471,6 +477,17 @@ def _parse_step(d: dict[str, Any], seen: set[str], *, top: bool,
         if when is not None:
             _validate_when(when)
         step.when = when
+    elif kind == "command":
+        cmd = d.get("command")
+        if not cmd:
+            raise WorkflowError(f"command step {sid!r} needs a 'command'")
+        if not isinstance(cmd, (str, list)):
+            raise WorkflowError(f"command step {sid!r}: command must be a string or list of strings")
+        step.command = cmd
+        step.cwd = d.get("cwd")
+        step.env = d.get("env")
+        step.timeout_s = d.get("timeout_s")
+        step.gate = d.get("gate")
     return step
 
 
@@ -816,6 +833,8 @@ class _Executor:
     async def _exec_step(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
         if step.kind == "agent":
             return await self._exec_agent(step, ctx, label)
+        if step.kind == "command":
+            return await self._exec_command(step, ctx, label)
         if step.kind == "parallel":
             return await self._exec_parallel(step, ctx, label)
         if step.kind == "pipeline":
@@ -824,6 +843,94 @@ class _Executor:
             return await self._exec_loop(step, ctx, label)
         # supervisor is top-level only (run() handles it); anything else is a bug.
         raise WorkflowError(f"cannot execute step kind {step.kind!r} here")
+
+    async def _exec_command(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
+        import time
+
+        # 1. Resolve and render command
+        raw_cmd = step.command
+        if isinstance(raw_cmd, str):
+            rendered_cmd = render(raw_cmd, ctx)
+            argv = [rendered_cmd]
+            shell = True
+        else:
+            argv = [render(arg, ctx) for arg in raw_cmd]
+            shell = False
+
+        # 2. Resolve CWD and env
+        wf_cwd = self.runner.default_cwd or os.getcwd()
+        step_cwd = render(step.cwd, ctx) if step.cwd else None
+        exec_cwd = os.path.abspath(step_cwd) if step_cwd else wf_cwd
+        if not os.path.isabs(exec_cwd) and step_cwd:
+            exec_cwd = os.path.abspath(os.path.join(wf_cwd, step_cwd))
+
+        exec_env = {**os.environ}
+        if step.env:
+            for k, v in step.env.items():
+                exec_env[k] = render(v, ctx)
+
+        # 3. Log and run subprocess
+        log(f"COMMAND  {label} → Running: {argv} (cwd={exec_cwd})")
+        t_start = time.time()
+        timeout = step.timeout_s or 60.0
+
+        if shell:
+            proc = await asyncio.create_subprocess_shell(
+                argv[0],
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=exec_cwd,
+                env=exec_env,
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=exec_cwd,
+                env=exec_env,
+            )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            timed_out = False
+        except asyncio.TimeoutError:
+            proc.kill()
+            stdout, stderr = await proc.communicate()
+            timed_out = True
+
+        duration = time.time() - t_start
+        exit_code = 124 if timed_out else proc.returncode
+        stdout_str = stdout.decode(errors="replace")
+        stderr_str = stderr.decode(errors="replace")
+
+        log(f"DONE     {label} ← exit={exit_code} ({duration:.2f}s)")
+        
+        value = {
+            "exit_code": exit_code,
+            "stdout": stdout_str,
+            "stderr": stderr_str,
+            "timeout": timed_out,
+            "duration_s": duration,
+        }
+
+        # 4. Handle gate checking if present
+        if step.gate:
+            field_name = step.gate.get("field", "exit_code")
+            val = value.get(field_name)
+            abort_on = step.gate.get("abort_on", [1])
+            if not isinstance(abort_on, (list, tuple, set)):
+                abort_set = {abort_on}
+            else:
+                abort_set = set(abort_on)
+            if val in abort_set or (field_name == "exit_code" and "non-zero" in abort_set and val != 0):
+                raise _Abort(step.id)
+
+        return {
+            "value": value,
+            "ok": exit_code == 0,
+            "timeout": timed_out,
+        }
 
     async def _exec_agent(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
         a = step.agent
