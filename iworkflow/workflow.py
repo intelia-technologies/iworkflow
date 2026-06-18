@@ -487,6 +487,50 @@ class _Abort(Exception):
         self.step_id = step_id
 
 
+def check_preflight(execution: dict[str, Any], cwd: str | None) -> None:
+    import subprocess
+
+    # 1. Check gh requirement
+    if execution.get("gh_required"):
+        try:
+            res = subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                check=False
+            )
+            if res.returncode != 0:
+                which_res = subprocess.run(["which", "gh"], capture_output=True, check=False)
+                if which_res.returncode != 0:
+                    raise WorkflowError("pre-flight check failed: GitHub CLI (gh) is required but not installed.")
+                raise WorkflowError("pre-flight check failed: GitHub CLI (gh) is not authenticated. Please run 'gh auth login' first.")
+        except FileNotFoundError:
+            raise WorkflowError("pre-flight check failed: GitHub CLI (gh) is required but not installed.")
+
+    # 2. Check worktree requirements (requires git clean state)
+    worktree = execution.get("worktree")
+    if worktree:
+        git_check = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            cwd=cwd,
+            check=False
+        )
+        if git_check.returncode != 0:
+            raise WorkflowError("pre-flight check failed: Workflow execution requires a git repository but none was found.")
+
+        status_check = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            check=False
+        )
+        if status_check.returncode == 0 and status_check.stdout.strip():
+            raise WorkflowError("pre-flight check failed: Git repository has uncommitted changes. Please stash or commit them first.")
+
+
 class _Executor:
     def __init__(self, runner: Runner, wf: WorkflowSpec, params: dict[str, Any]) -> None:
         self.runner = runner
@@ -524,54 +568,9 @@ class _Executor:
         tmp.write_text(json.dumps(self._completed, default=str), encoding="utf-8")
         os.replace(tmp, self._steps_path)
 
-    async def _run_preflight_checks(self) -> None:
-        execution = self.wf.execution or {}
-        cwd = self.runner.default_cwd
-        import subprocess
-
-        # 1. Check gh requirement
-        if execution.get("gh_required"):
-            try:
-                res = subprocess.run(
-                    ["gh", "auth", "status"],
-                    capture_output=True,
-                    text=True,
-                    cwd=cwd,
-                    check=False
-                )
-                if res.returncode != 0:
-                    which_res = subprocess.run(["which", "gh"], capture_output=True, check=False)
-                    if which_res.returncode != 0:
-                        raise WorkflowError("pre-flight check failed: GitHub CLI (gh) is required but not installed.")
-                    raise WorkflowError("pre-flight check failed: GitHub CLI (gh) is not authenticated. Please run 'gh auth login' first.")
-            except FileNotFoundError:
-                raise WorkflowError("pre-flight check failed: GitHub CLI (gh) is required but not installed.")
-
-        # 2. Check worktree requirements (requires git clean state)
-        worktree = execution.get("worktree")
-        if worktree:
-            git_check = subprocess.run(
-                ["git", "rev-parse", "--is-inside-work-tree"],
-                capture_output=True,
-                cwd=cwd,
-                check=False
-            )
-            if git_check.returncode != 0:
-                raise WorkflowError("pre-flight check failed: Workflow execution requires a git repository but none was found.")
-
-            status_check = subprocess.run(
-                ["git", "status", "--porcelain"],
-                capture_output=True,
-                text=True,
-                cwd=cwd,
-                check=False
-            )
-            if status_check.returncode == 0 and status_check.stdout.strip():
-                raise WorkflowError("pre-flight check failed: Git repository has uncommitted changes. Please stash or commit them first.")
-
     async def run(self) -> dict[str, Any]:
         # Pre-flight check before execution
-        await self._run_preflight_checks()
+        check_preflight(self.wf.execution, self.runner.default_cwd)
 
         status, aborted_at = "DONE", None
         try:

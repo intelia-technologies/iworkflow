@@ -32,7 +32,7 @@ from .providers import ClaudeInteractiveProvider, CodexProvider, CursorProvider,
 from .recipes import get_recipe, list_recipes
 from .scheduler import Runner
 from .toolsets import ToolCatalog
-from .workflow import run_spec, Limits, WorkflowError
+from .workflow import run_spec, Limits, WorkflowError, check_preflight
 
 # In-process job registry for start/poll (MCP clients with short tool timeouts).
 _jobs: dict[str, asyncio.Task] = {}
@@ -202,7 +202,7 @@ def _workflow_status(
         return hist["status"], hist["result"], hist["error"]
 
     events = _tail_events(run_id, journal_dir, limit=5)
-    
+
     # Check on-disk events
     if events:
         last = events[-1]
@@ -216,7 +216,7 @@ def _workflow_status(
     run_dir = Path(journal_dir) / "runs" / run_id
     if not run_dir.exists():
         return "not_found", None, "run directory not found"
-    
+
     if not events:
         return "failed_to_start", None, "run directory exists but no events were written"
 
@@ -289,6 +289,26 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
     if existing is not None and not existing.done():
         return {"run_id": rid, "status": "running"}
 
+    # 1. Resolve raw spec first for validation
+    raw_spec = spec
+    if workflow is not None:
+        try:
+            raw_spec = get_recipe(workflow, recipe_dir)
+        except Exception as e:
+            return {"status": "error", "error": f"recipe not found: {e}"}
+    elif goal is not None:
+        try:
+            raw_spec = get_recipe("fan_synthesize", recipe_dir)
+        except Exception:
+            pass
+
+    # 2. Run pre-flight checks synchronously before starting background task
+    if raw_spec:
+        try:
+            check_preflight(raw_spec.get("execution") or {}, cwd)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
     async def _work() -> dict[str, Any]:
         return await run_workflow(
             goal, workflow=workflow, params=params, spec=spec, run_id=rid,
@@ -359,7 +379,7 @@ async def workflow_stream(
         )
         events.extend(batch)
         status, result, hint = _workflow_status(run_id, journal_dir)
-        terminal = status in {"done", "error", "unknown_done"}
+        terminal = status in {"done", "error", "unknown_done", "failed_to_start", "not_found"}
         if events or terminal or block_s <= 0 or time.time() >= deadline:
             break
         await asyncio.sleep(0.25)

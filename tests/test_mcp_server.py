@@ -187,13 +187,21 @@ def test_workflow_start_failure_reporting(tmp_path):
             runner=runner,
             journal_dir=str(tmp_path),
         )
-        assert started["status"] == "started"
-        
-        # Wait a brief moment for the background task to execute and fail
-        await asyncio.sleep(0.1)
-        
-        poll_result = await workflow_poll("fail-run", journal_dir=str(tmp_path))
-        assert poll_result["status"] == "error"
-        assert "invalid-recipe-name-xyz" in str(poll_result.get("error"))
+        assert started["status"] == "error"
+        assert "invalid-recipe-name-xyz" in str(started.get("error"))
 
     asyncio.run(_run())
+
+
+def test_workflow_stream_terminal_states(tmp_path):
+    import time
+    t_start = time.time()
+    res = asyncio.run(workflow_stream(
+        "non-existent-run",
+        journal_dir=str(tmp_path),
+        after=0,
+        block_s=5.0,
+    ))
+    duration = time.time() - t_start
+    assert res["status"] == "not_found"
+    assert duration < 1.0
