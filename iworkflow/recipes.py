@@ -382,11 +382,15 @@ BRAINSTORM: dict[str, Any] = {
                 {
                     "id": "inspect_code",
                     "prefer": ["gemini"],
+                    "model": "pro",
+                    "tools": ["grep", "find"],
                     "prompt": "Analyze existing code and specs related to {{params.change_name}}."
                 },
                 {
                     "id": "inspect_rules",
                     "prefer": ["gemini"],
+                    "model": "flash",
+                    "tools": ["read"],
                     "prompt": "Extract relevant 'learnings' and 'rules' from the project documentation."
                 }
             ]
@@ -426,6 +430,8 @@ BRAINSTORM: dict[str, Any] = {
             "id": "phase6_write_spec",
             "kind": "agent",
             "prefer": ["claude"],
+            "model": "sonnet",
+            "tools": ["write"],
             "sandbox": "write",
             "instructions": { "gh": "gh pr create --title 'Brainstorm: {{params.change_name}}' --body 'Generated via iworkflow'" },
             "prompt": "Write the final brainstorm to 'openspec/changes/{{params.change_name}}/brainstorm.md' using the standard template. Context: {{steps.phase5_dialogue_loop.value}}."
@@ -434,6 +440,8 @@ BRAINSTORM: dict[str, Any] = {
             "id": "phase7_update_wiki",
             "kind": "agent",
             "prefer": ["claude"],
+            "model": "sonnet",
+            "tools": ["write"],
             "sandbox": "write",
             "prompt": "Update the wiki in 'thoughts/shared/wiki/' with the new domain knowledge from this brainstorm."
         },
