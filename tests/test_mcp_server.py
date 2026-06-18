@@ -160,3 +160,40 @@ def test_check_sessions_delegates(monkeypatch):
     )
     out = check_sessions(["codex"])
     assert out["ready"] == ["codex"]
+
+
+def test_workflow_start_failure_reporting(tmp_path):
+    from iworkflow.mcp_server import workflow_poll
+    
+    # 1. Test not_found state
+    poll_result = asyncio.run(workflow_poll("non-existent-run", journal_dir=str(tmp_path)))
+    assert poll_result["status"] == "not_found"
+    assert "not found" in poll_result.get("hint", "")
+
+    # 2. Test failed_to_start state (directory exists but no events)
+    run_dir = tmp_path / "runs" / "failed-start-run"
+    run_dir.mkdir(parents=True)
+    poll_result = asyncio.run(workflow_poll("failed-start-run", journal_dir=str(tmp_path)))
+    assert poll_result["status"] == "failed_to_start"
+
+    # 3. Test background task failure caching in _jobs_history
+    codex = FakeProvider("codex")
+    runner = Runner("fail-run", {"codex": codex}, {"codex": 1}, journal_dir=str(tmp_path))
+    
+    async def _run() -> None:
+        started = await workflow_start(
+            workflow="invalid-recipe-name-xyz",
+            run_id="fail-run",
+            runner=runner,
+            journal_dir=str(tmp_path),
+        )
+        assert started["status"] == "started"
+        
+        # Wait a brief moment for the background task to execute and fail
+        await asyncio.sleep(0.1)
+        
+        poll_result = await workflow_poll("fail-run", journal_dir=str(tmp_path))
+        assert poll_result["status"] == "error"
+        assert "invalid-recipe-name-xyz" in str(poll_result.get("error"))
+
+    asyncio.run(_run())

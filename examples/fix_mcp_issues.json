@@ -1,0 +1,36 @@
+{
+  "name": "fix_mcp_issues",
+  "description": "Fix MCP async startup errors, status reporting, and sandbox write limitations.",
+  "params": {
+    "target_file": "iworkflow/mcp_server.py"
+  },
+  "steps": [
+    {
+      "id": "fix_mcp_async_status",
+      "kind": "agent",
+      "prefer": ["claude"],
+      "prompt": "Implement _jobs_history to cache finished background tasks. Update _workflow_status to report 'not_found', 'failed_to_start', or 'error' dynamically. Fix `_cleanup` in `workflow_start` to save status before deleting the task."
+    },
+    {
+      "id": "fix_run_workflow_logging",
+      "kind": "agent",
+      "prefer": ["claude"],
+      "prompt": "Update run_workflow to catch startup and recipe errors, write them to events.jsonl using r._emit('run', 'error', error=str(e)), and re-raise."
+    },
+    {
+      "id": "widen_sandbox_limit",
+      "kind": "agent",
+      "prefer": ["claude"],
+      "prompt": "Ensure limits in run_workflow allow both 'read-only' and 'write' sandboxes by default."
+    },
+    {
+      "id": "verify_validation",
+      "kind": "agent",
+      "prefer": ["claude"],
+      "prompt": "Run make validate and ensure all tests pass cleanly."
+    }
+  ],
+  "output": {
+    "status": "complete"
+  }
+}

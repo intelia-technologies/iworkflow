@@ -32,10 +32,11 @@ from .providers import ClaudeInteractiveProvider, CodexProvider, CursorProvider,
 from .recipes import get_recipe, list_recipes
 from .scheduler import Runner
 from .toolsets import ToolCatalog
-from .workflow import run_spec, Limits
+from .workflow import run_spec, Limits, WorkflowError
 
 # In-process job registry for start/poll (MCP clients with short tool timeouts).
 _jobs: dict[str, asyncio.Task] = {}
+_jobs_history: dict[str, dict[str, Any]] = {}
 DEFAULT_COOLDOWN_S = 300.0
 
 SYNC_WORKFLOW_DOC = """\
@@ -195,14 +196,30 @@ def _workflow_status(
         except Exception as e:  # noqa: BLE001
             return "error", None, str(e)
 
+    # Check memory history for finished jobs in this process session
+    hist = _jobs_history.get(run_id)
+    if hist is not None:
+        return hist["status"], hist["result"], hist["error"]
+
     events = _tail_events(run_id, journal_dir, limit=5)
-    steps_path = Path(journal_dir) / "runs" / run_id / "wf-steps.json"
-    if steps_path.exists() and events:
+    
+    # Check on-disk events
+    if events:
         last = events[-1]
+        if last.get("event") == "error":
+            return "error", None, last.get("error")
         if last.get("event") in {"done", "exhausted"}:
             return "unknown_done", None, (
                 "in-process task gone; re-run workflow_start or inspect ledger"
             )
+
+    run_dir = Path(journal_dir) / "runs" / run_id
+    if not run_dir.exists():
+        return "not_found", None, "run directory not found"
+    
+    if not events:
+        return "failed_to_start", None, "run directory exists but no events were written"
+
     return "unknown", None, None
 
 
@@ -231,16 +248,28 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
         catalog=_resolve_catalog(catalog_root, cwd),
         journal_dir=journal_dir,
     )
-    limits = Limits(allow_tools=allow_tools)
-    if spec is not None:
-        result = await run_spec(r, spec, params, limits=limits)
-    elif workflow is not None:
-        result = await run_spec(r, get_recipe(workflow, recipe_dir), params, limits=limits)
-    elif goal is not None:
-        result = await run_spec(r, get_recipe("fan_synthesize", recipe_dir), {"goal": goal}, limits=limits)
-    result = _maybe_degrade_fan_synthesize(result)
-    result["run_id"] = rid
-    return result
+    limits = Limits(
+        allow_tools=allow_tools,
+        allowed_sandboxes=frozenset({"read-only", "write"})
+    )
+    try:
+        if spec is not None:
+            result = await run_spec(r, spec, params, limits=limits)
+        elif workflow is not None:
+            result = await run_spec(r, get_recipe(workflow, recipe_dir), params, limits=limits)
+        elif goal is not None:
+            result = await run_spec(r, get_recipe("fan_synthesize", recipe_dir), {"goal": goal}, limits=limits)
+        else:
+            raise WorkflowError("must provide spec, workflow, or goal")
+        result = _maybe_degrade_fan_synthesize(result)
+        result["run_id"] = rid
+        return result
+    except Exception as e:
+        try:
+            r._emit("run", "error", error=str(e))
+        except Exception:
+            pass
+        raise e
 
 
 async def workflow_start(goal: str | None = None, *, workflow: str | None = None,
@@ -272,6 +301,17 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
     _jobs[rid] = task
 
     def _cleanup(t: asyncio.Task) -> None:
+        # Cache outcome in process history before removing the task
+        try:
+            res = t.result()
+            _jobs_history[rid] = {"status": "done", "result": res, "error": None}
+        except Exception as e:
+            _jobs_history[rid] = {"status": "error", "result": None, "error": str(e)}
+
+        if len(_jobs_history) > 100:
+            first_key = next(iter(_jobs_history))
+            _jobs_history.pop(first_key, None)
+
         if _jobs.get(rid) is t:
             del _jobs[rid]
 
