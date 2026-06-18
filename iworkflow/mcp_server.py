@@ -406,7 +406,11 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
     # 2. Run pre-flight checks synchronously before starting background task
     if raw_spec:
         try:
-            check_preflight(raw_spec.get("execution") or {}, cwd)
+            check_preflight(
+                raw_spec.get("execution") or {},
+                cwd,
+                ignore_paths=[resolved_journal_dir],
+            )
         except Exception as e:
             return {"run_id": rid, "status": "error", "error": str(e)}
 

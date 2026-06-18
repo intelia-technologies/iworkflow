@@ -69,6 +69,7 @@ class Runner:
         self.providers = providers
         self.catalog = catalog
         self.default_cwd = default_cwd
+        self.journal_dir = journal_dir
         self.sems = {name: asyncio.Semaphore(caps.get(name, 2)) for name in providers}
         self.caps = caps
         self.cooldown_s = cooldown_s   # >0: skip a provider for this long after it throttles

@@ -493,7 +493,12 @@ class _Abort(Exception):
         self.step_id = step_id
 
 
-def check_preflight(execution: dict[str, Any], cwd: str | None) -> None:
+def check_preflight(
+    execution: dict[str, Any],
+    cwd: str | None,
+    *,
+    ignore_paths: list[str] | tuple[str, ...] = (),
+) -> None:
     import shutil
     import subprocess
 
@@ -534,8 +539,20 @@ def check_preflight(execution: dict[str, Any], cwd: str | None) -> None:
         if git_check.returncode != 0:
             fail("Workflow execution requires a git repository but none was found.")
 
+        pathspecs = [".", ":(exclude).iworkflow"]
+        for ignored in ignore_paths:
+            ignored_abs = os.path.abspath(ignored)
+            try:
+                rel = os.path.relpath(ignored_abs, checked_cwd)
+            except ValueError:
+                continue
+            if rel == "." or rel.startswith(".." + os.sep) or rel == "..":
+                continue
+            pathspecs.append(f":(exclude){rel}")
+            pathspecs.append(f":(exclude){rel.rstrip(os.sep)}/")
+
         status_check = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=all", "--", *pathspecs],
             capture_output=True,
             text=True,
             cwd=checked_cwd,
@@ -587,7 +604,11 @@ class _Executor:
     async def run(self) -> dict[str, Any]:
         # Pre-flight check before execution unless the caller already validated.
         if not self.preflight_checked:
-            check_preflight(self.wf.execution, self.runner.default_cwd)
+            check_preflight(
+                self.wf.execution,
+                self.runner.default_cwd,
+                ignore_paths=[self.runner.journal_dir],
+            )
 
         status, aborted_at = "DONE", None
         try:

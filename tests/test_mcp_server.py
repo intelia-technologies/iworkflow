@@ -260,7 +260,7 @@ def test_workflow_start_preflight_error_includes_run_id(monkeypatch):
     import iworkflow.mcp_server as mcp_server
     from iworkflow.workflow import WorkflowError
 
-    def fail_preflight(execution, cwd):
+    def fail_preflight(execution, cwd, *, ignore_paths=()):
         raise WorkflowError("pre-flight check failed in /repo: dirty")
 
     monkeypatch.setattr(mcp_server, "check_preflight", fail_preflight)
@@ -288,7 +288,7 @@ def test_workflow_start_runs_preflight_once(monkeypatch, tmp_path):
 
     calls = {"n": 0}
 
-    def count_preflight(execution, cwd):
+    def count_preflight(execution, cwd, *, ignore_paths=()):
         calls["n"] += 1
 
     monkeypatch.setattr(mcp_server, "check_preflight", count_preflight)

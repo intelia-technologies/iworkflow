@@ -658,6 +658,53 @@ def test_required_artifact_existing_allows_done(tmp_path):
     assert out["status"] == "DONE"
 
 
+def test_preflight_ignores_iworkflow_journal_dir(tmp_path):
+    import subprocess
+    from iworkflow import run_spec, Runner, FakeProvider, Limits
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "README.md").write_text("initial", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    # Existing journal data enables resume but must not make the worktree dirty for preflight.
+    journal = repo / ".iworkflow"
+    old_run = journal / "runs" / "previous"
+    old_run.mkdir(parents=True)
+    (old_run / "events.jsonl").write_text("{}\n", encoding="utf-8")
+
+    runner = Runner(
+        "journal-ok",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(journal),
+        default_cwd=str(repo),
+    )
+    spec = {
+        "execution": {"worktree": "new:test"},
+        "steps": [{"id": "s", "kind": "agent", "prefer": ["codex"], "prompt": "ok"}],
+    }
+
+    out = _run(run_spec(runner, spec, limits=Limits(allow_tools=True)))
+    assert out["status"] == "DONE"
+
+    (repo / "dirty.txt").write_text("dirty", encoding="utf-8")
+    runner2 = Runner(
+        "journal-dirty",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(journal),
+        default_cwd=str(repo),
+    )
+    with pytest.raises(WorkflowError) as exc_info:
+        _run(run_spec(runner2, spec, limits=Limits(allow_tools=True)))
+    assert "uncommitted changes" in str(exc_info.value)
+
+
 def test_preflight_checks_uncommitted_changes(tmp_path):
     import subprocess
     from iworkflow import run_spec, Runner, FakeProvider, Limits
