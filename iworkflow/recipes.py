@@ -337,9 +337,130 @@ COMPLEX_SECURITY_AUDIT: dict[str, Any] = {
     }
 }
 
+BRAINSTORM: dict[str, Any] = {
+    "name": "brainstorm",
+    "description": "Interactive brainstorming workflow with context inspection and spec generation.",
+    "execution": {
+        "worktree": "new:brainstorm-{{params.change_name}}",
+        "branch": "new:brainstorm/{{params.change_name}}",
+        "gh_required": True
+    },
+    "params": {
+        "change_name": "feature-x",
+        "user_input": ""
+    },
+    "schemas": {
+        "proposal": PROPOSAL_SCHEMA,
+        "decision": DECISION_SCHEMA
+    },
+    "steps": [
+        {
+            "id": "phase1_search",
+            "kind": "agent",
+            "prefer": ["gemini"],
+            "role": "researcher",
+            "timeout_s": 120,
+            "heartbeat_interval_s": 30,
+            "tools": ["grep", "find"],
+            "prompt": "Search the codebase and 'openspec/changes/' for any existing brainstorms related to: {{params.change_name}}. List them or confirm if none exist."
+        },
+        {
+            "id": "phase2_clarification",
+            "kind": "agent",
+            "prefer": ["claude"],
+            "role": "architect",
+            "schema": {
+                "type": "object", "required": ["questions"],
+                "properties": {"questions": {"type": "array", "items": {"type": "string"}}}
+            },
+            "prompt": "Based on the task '{{params.change_name}}' and existing research '{{steps.phase1_search.value}}', generate 2-3 targeted clarification questions for the user to define the scope."
+        },
+        {
+            "id": "phase3_context",
+            "kind": "parallel",
+            "agents": [
+                {
+                    "id": "inspect_code",
+                    "prefer": ["gemini"],
+                    "prompt": "Analyze existing code and specs related to {{params.change_name}}."
+                },
+                {
+                    "id": "inspect_rules",
+                    "prefer": ["gemini"],
+                    "prompt": "Extract relevant 'learnings' and 'rules' from the project documentation."
+                }
+            ]
+        },
+        {
+                    "id": "phase4_proposals",
+                    "kind": "agent",
+                    "prefer": ["claude"],
+                    "model": "opus",
+                    "role": "solution_designer",
+                    "schema": "proposal",
+                    "timeout_s": 300,
+                    "prompt": "Using context from {{steps.phase3_context.value}}, propose 2-3 technical approaches for {{params.change_name}}. Include honest pros/contras for each."
+                },
+        {
+            "id": "phase5_dialogue_loop",
+            "kind": "loop",
+            "max_iterations": 5,
+            "until": {
+                "agent": {
+                    "prompt": "Review the dialogue: {{loop.collected}}. Is the scope locked and all forks resolved? Return STOP or CONTINUE.",
+                    "stop_when": "STOP",
+                    "prefer": ["claude"]
+                }
+            },
+            "body": [
+                {
+                    "id": "chat",
+                    "kind": "agent",
+                    "prefer": ["claude"],
+                    "prompt": "Current status: {{loop.collected}}. User says: {{params.user_input}}. Refine the direction until scope is locked."
+                }
+            ]
+        },
+        {
+            "id": "phase6_write_spec",
+            "kind": "agent",
+            "prefer": ["claude"],
+            "sandbox": "write",
+            "instructions": { "gh": "gh pr create --title 'Brainstorm: {{params.change_name}}' --body 'Generated via iworkflow'" },
+            "prompt": "Write the final brainstorm to 'openspec/changes/{{params.change_name}}/brainstorm.md' using the standard template. Context: {{steps.phase5_dialogue_loop.value}}."
+        },
+        {
+            "id": "phase7_update_wiki",
+            "kind": "agent",
+            "prefer": ["claude"],
+            "sandbox": "write",
+            "prompt": "Update the wiki in 'thoughts/shared/wiki/' with the new domain knowledge from this brainstorm."
+        },
+        {
+            "id": "phase8_handoff",
+            "kind": "agent",
+            "prefer": ["claude"],
+            "prompt": "Confirm files created. Suggest next step: /workflows:plan {{params.change_name}}"
+        },
+        {
+            "id": "brainstorm_monitor",
+            "kind": "supervisor",
+            "needs": ["phase5_dialogue_loop"],
+            "watch": ["phase5_dialogue_loop"],
+            "prefer": ["claude"],
+            "when": {"path": "steps.phase5_dialogue_loop", "select": "stop_reason", "eq": "max_iterations"},
+            "prompt": "The dialogue loop reached max iterations without locking the scope. Should we inject a manual triage step or continue as-is?"
+        }
+    ],
+    "output": {
+        "spec_path": "openspec/changes/{{params.change_name}}/brainstorm.md",
+        "branch": "brainstorm/{{params.change_name}}"
+    }
+}
+
 BUILTIN: dict[str, dict[str, Any]] = {
     spec["name"]: spec
-    for spec in (FAN_SYNTHESIZE, REVIEW, ROADMAP, DEEP_REVIEW, ADAPTIVE_REVIEW, COMPLEX_SECURITY_AUDIT)
+    for spec in (FAN_SYNTHESIZE, REVIEW, ROADMAP, DEEP_REVIEW, ADAPTIVE_REVIEW, COMPLEX_SECURITY_AUDIT, BRAINSTORM)
 }
 
 DEFAULT_RECIPE_DIR = ".iworkflow/recipes"

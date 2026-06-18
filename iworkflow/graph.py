@@ -62,22 +62,28 @@ def _join(seq: Any, ctx: dict[str, Any]) -> str:
     return ", ".join(_text(x, ctx) for x in (seq or []))
 
 
+def _meta_lines(spec: dict[str, Any], ctx: dict[str, Any]) -> list[str]:
+    """Common per-agent metadata: role/prefer/model/tools/timeout/heartbeat."""
+    lines: list[str] = []
+    if spec.get("role"):
+        lines.append(f"role: {_text(spec.get('role'), ctx)}")
+    if spec.get("prefer"):
+        lines.append(f"prefer: {_join(spec.get('prefer'), ctx)}")
+    if spec.get("model"):
+        lines.append(f"model: {_text(spec.get('model'), ctx)}")
+    if spec.get("tools"):
+        lines.append(f"tools: {_join(spec.get('tools'), ctx)}")
+    if spec.get("timeout_s"):
+        lines.append(f"timeout: {_esc(spec.get('timeout_s'))}s")
+    if spec.get("heartbeat_interval_s"):
+        lines.append(f"heartbeat: {_esc(spec.get('heartbeat_interval_s'))}s")
+    return lines
+
+
 def render_agent(step_id: str, agent_spec: dict[str, Any],
                  ctx: dict[str, Any]) -> tuple[str, str, str]:
-    prefer = agent_spec.get("prefer")
-    role = agent_spec.get("role")
-    tools = agent_spec.get("tools")
-
     label_lines = [f"<b>{_text(step_id, ctx)}</b> (agent)"]
-    if role:
-        label_lines.append(f"role: {_text(role, ctx)}")
-    if prefer:
-        label_lines.append(f"prefer: {_join(prefer, ctx)}")
-    if agent_spec.get("model"):
-        label_lines.append(f"model: {_text(agent_spec.get('model'), ctx)}")
-    if tools:
-        label_lines.append(f"tools: {_join(tools, ctx)}")
-
+    label_lines += _meta_lines(agent_spec, ctx)
     label = "<br/>".join(label_lines)
     node_def = f'    {step_id}["{label}"]'
     return node_def, step_id, step_id
@@ -85,15 +91,12 @@ def render_agent(step_id: str, agent_spec: dict[str, Any],
 
 def render_supervisor(step_id: str, step_spec: dict[str, Any],
                       ctx: dict[str, Any]) -> tuple[str, str, str]:
-    prefer = step_spec.get("prefer")
-    when = step_spec.get("when")
-
     label_lines = [f"<b>{_text(step_id, ctx)}</b> (supervisor)"]
-    if prefer:
-        label_lines.append(f"prefer: {_join(prefer, ctx)}")
-    if when:
+    label_lines += _meta_lines(step_spec, ctx)
+    if step_spec.get("watch"):
+        label_lines.append(f"watch: {_join(step_spec.get('watch'), ctx)}")
+    if step_spec.get("when"):
         label_lines.append("when: conditional guard")
-
     label = "<br/>".join(label_lines)
     node_def = f'    {step_id}{{"{label}"}}'
     return node_def, step_id, step_id
