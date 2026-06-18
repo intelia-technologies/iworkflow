@@ -189,8 +189,71 @@ def test_workflow_start_failure_reporting(tmp_path):
             runner=runner,
             journal_dir=str(tmp_path),
         )
+        assert started["run_id"] == "fail-run"
         assert started["status"] == "error"
         assert "invalid-recipe-name-xyz" in str(started.get("error"))
+
+    asyncio.run(_run())
+
+
+def test_workflow_start_preflight_error_includes_run_id(monkeypatch):
+    import iworkflow.mcp_server as mcp_server
+    from iworkflow.workflow import WorkflowError
+
+    def fail_preflight(execution, cwd):
+        raise WorkflowError("pre-flight check failed in /repo: dirty")
+
+    monkeypatch.setattr(mcp_server, "check_preflight", fail_preflight)
+
+    async def _run() -> None:
+        started = await workflow_start(
+            spec={
+                "execution": {"worktree": "new:branch"},
+                "steps": [{"id": "a", "kind": "agent", "prompt": "a"}],
+            },
+            run_id="debug-brainstorm-v3",
+        )
+        assert started == {
+            "run_id": "debug-brainstorm-v3",
+            "status": "error",
+            "error": "pre-flight check failed in /repo: dirty",
+        }
+
+    asyncio.run(_run())
+
+
+def test_workflow_start_runs_preflight_once(monkeypatch, tmp_path):
+    import iworkflow.mcp_server as mcp_server
+    import iworkflow.workflow as workflow_mod
+
+    calls = {"n": 0}
+
+    def count_preflight(execution, cwd):
+        calls["n"] += 1
+
+    monkeypatch.setattr(mcp_server, "check_preflight", count_preflight)
+    monkeypatch.setattr(workflow_mod, "check_preflight", count_preflight)
+
+    runner = Runner(
+        "preflight-once",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+    )
+
+    async def _run() -> None:
+        started = await workflow_start(
+            spec={
+                "execution": {"worktree": "new:branch"},
+                "steps": [{"id": "a", "kind": "agent", "prefer": ["codex"], "prompt": "a"}],
+            },
+            run_id="preflight-once",
+            runner=runner,
+            journal_dir=str(tmp_path),
+        )
+        assert started["status"] == "started"
+        await asyncio.sleep(0.05)
+        assert calls["n"] == 1
 
     asyncio.run(_run())
 

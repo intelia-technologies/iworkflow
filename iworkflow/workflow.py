@@ -472,14 +472,15 @@ def _parse_step(d: dict[str, Any], seen: set[str], *, top: bool,
 # --------------------------------------------------------------------------
 async def run_spec(runner: Runner, spec: dict[str, Any],
                    params: dict[str, Any] | None = None,
-                   limits: Limits | None = None) -> dict[str, Any]:
+                   limits: Limits | None = None,
+                   preflight_checked: bool = False) -> dict[str, Any]:
     """Parse + execute a declarative workflow spec, returning a result bundle.
 
     `limits` is the safety policy (sandbox allowlist + resource bounds). It
     defaults to the conservative `Limits()` — correct for specs that arrive from
     an untrusted agent over MCP. Trusted callers can widen it."""
     wf = WorkflowSpec.parse(spec, limits)
-    return await _Executor(runner, wf, params or {}).run()
+    return await _Executor(runner, wf, params or {}, preflight_checked=preflight_checked).run()
 
 
 class _Abort(Exception):
@@ -488,25 +489,33 @@ class _Abort(Exception):
 
 
 def check_preflight(execution: dict[str, Any], cwd: str | None) -> None:
+    import shutil
     import subprocess
+
+    checked_cwd = os.path.abspath(cwd or os.getcwd())
+
+    def fail(message: str) -> None:
+        raise WorkflowError(f"pre-flight check failed in {checked_cwd}: {message}")
+
+    if not os.path.isdir(checked_cwd):
+        fail("working directory does not exist")
 
     # 1. Check gh requirement
     if execution.get("gh_required"):
+        if shutil.which("gh") is None:
+            fail("GitHub CLI (gh) is required but not installed.")
         try:
             res = subprocess.run(
                 ["gh", "auth", "status"],
                 capture_output=True,
                 text=True,
-                cwd=cwd,
+                cwd=checked_cwd,
                 check=False
             )
-            if res.returncode != 0:
-                which_res = subprocess.run(["which", "gh"], capture_output=True, check=False)
-                if which_res.returncode != 0:
-                    raise WorkflowError("pre-flight check failed: GitHub CLI (gh) is required but not installed.")
-                raise WorkflowError("pre-flight check failed: GitHub CLI (gh) is not authenticated. Please run 'gh auth login' first.")
         except FileNotFoundError:
-            raise WorkflowError("pre-flight check failed: GitHub CLI (gh) is required but not installed.")
+            fail("GitHub CLI (gh) is required but not installed.")
+        if res.returncode != 0:
+            fail("GitHub CLI (gh) is not authenticated. Please run 'gh auth login' first.")
 
     # 2. Check worktree requirements (requires git clean state)
     worktree = execution.get("worktree")
@@ -514,30 +523,32 @@ def check_preflight(execution: dict[str, Any], cwd: str | None) -> None:
         git_check = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
             capture_output=True,
-            cwd=cwd,
+            cwd=checked_cwd,
             check=False
         )
         if git_check.returncode != 0:
-            raise WorkflowError("pre-flight check failed: Workflow execution requires a git repository but none was found.")
+            fail("Workflow execution requires a git repository but none was found.")
 
         status_check = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True,
             text=True,
-            cwd=cwd,
+            cwd=checked_cwd,
             check=False
         )
         if status_check.returncode == 0 and status_check.stdout.strip():
-            raise WorkflowError("pre-flight check failed: Git repository has uncommitted changes. Please stash or commit them first.")
+            fail("Git repository has uncommitted changes. Please stash or commit them first.")
 
 
 class _Executor:
-    def __init__(self, runner: Runner, wf: WorkflowSpec, params: dict[str, Any]) -> None:
+    def __init__(self, runner: Runner, wf: WorkflowSpec, params: dict[str, Any], *,
+                 preflight_checked: bool = False) -> None:
         self.runner = runner
         self.wf = wf
         self.limits = wf.limits
         self.schemas = wf.schemas
         self.params = {**wf.params, **params}    # spec defaults, caller overrides
+        self.preflight_checked = preflight_checked
         self.ctx: dict[str, Any] = {"params": self.params, "steps": {}}
         self.calls = 0                           # global agent-call budget (anti fork-bomb)
         # a supervisor step may mutate the REMAINING plan (skip/inject), so the run
@@ -569,8 +580,9 @@ class _Executor:
         os.replace(tmp, self._steps_path)
 
     async def run(self) -> dict[str, Any]:
-        # Pre-flight check before execution
-        check_preflight(self.wf.execution, self.runner.default_cwd)
+        # Pre-flight check before execution unless the caller already validated.
+        if not self.preflight_checked:
+            check_preflight(self.wf.execution, self.runner.default_cwd)
 
         status, aborted_at = "DONE", None
         try:

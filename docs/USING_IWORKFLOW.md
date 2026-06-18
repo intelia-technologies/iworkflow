@@ -62,7 +62,7 @@ own reasoning. `iworkflow register` once, then these tools appear:
 - `iworkflow_list_workflows(recipe_dir?)` — recipes (built-in + host dir).
 - `iworkflow_workflow_start(goal? | workflow?+params? | spec?, …)` — **start** a
   workflow without blocking. Returns `{run_id, status: "started"}` or a
-  synchronous `{status: "error", error: "pre-flight check failed: ..."}`.
+  synchronous `{run_id, status: "error", error: "pre-flight check failed: ..."}`.
 - `iworkflow_workflow_stream(run_id, after=0, block_s=5)` — **incremental progress**
   from `events.jsonl` (SSE-like long-poll). Use returned `next_after` as cursor.
 - `iworkflow_workflow_poll(run_id)` — snapshot poll (status + tail of events).

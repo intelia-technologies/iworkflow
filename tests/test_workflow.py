@@ -543,4 +543,6 @@ def test_preflight_checks_uncommitted_changes(tmp_path):
     # Run should raise WorkflowError due to uncommitted changes
     with pytest.raises(WorkflowError) as exc_info:
         asyncio.run(run_spec(runner, spec, limits=Limits(allow_tools=True)))
-    assert "uncommitted changes" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "uncommitted changes" in message
+    assert str(repo) in message

@@ -234,7 +234,8 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
                        caps: dict[str, int] | None = None,
                        catalog_root: str | None = None,
                        journal_dir: str = ".iworkflow",
-                       allow_tools: bool = True) -> dict[str, Any]:
+                       allow_tools: bool = True,
+                       preflight_checked: bool = False) -> dict[str, Any]:
     """Run a subscription-only multi-agent workflow. Three ways to drive it:
 
     - `spec=`     : a declarative workflow spec (define your own — DYNAMIC door).
@@ -255,11 +256,11 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
     )
     try:
         if spec is not None:
-            result = await run_spec(r, spec, params, limits=limits)
+            result = await run_spec(r, spec, params, limits=limits, preflight_checked=preflight_checked)
         elif workflow is not None:
-            result = await run_spec(r, get_recipe(workflow, recipe_dir), params, limits=limits)
+            result = await run_spec(r, get_recipe(workflow, recipe_dir), params, limits=limits, preflight_checked=preflight_checked)
         elif goal is not None:
-            result = await run_spec(r, get_recipe("fan_synthesize", recipe_dir), {"goal": goal}, limits=limits)
+            result = await run_spec(r, get_recipe("fan_synthesize", recipe_dir), {"goal": goal}, limits=limits, preflight_checked=preflight_checked)
         else:
             raise WorkflowError("must provide spec, workflow, or goal")
         result = _maybe_degrade_fan_synthesize(result)
@@ -299,7 +300,7 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
         try:
             raw_spec = get_recipe(workflow, recipe_dir)
         except Exception as e:
-            return {"status": "error", "error": f"recipe not found: {e}"}
+            return {"run_id": rid, "status": "error", "error": f"recipe not found: {e}"}
     elif goal is not None:
         try:
             raw_spec = get_recipe("fan_synthesize", recipe_dir)
@@ -311,7 +312,7 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
         try:
             check_preflight(raw_spec.get("execution") or {}, cwd)
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            return {"run_id": rid, "status": "error", "error": str(e)}
 
     async def _work() -> dict[str, Any]:
         return await run_workflow(
@@ -319,6 +320,7 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
             recipe_dir=recipe_dir, runner=runner, cwd=cwd, timeout_s=timeout_s,
             caps=caps, catalog_root=catalog_root, journal_dir=journal_dir,
             allow_tools=allow_tools,
+            preflight_checked=raw_spec is not None,
         )
 
     task = asyncio.create_task(_work())
@@ -467,7 +469,8 @@ def main() -> None:
         Recipes/specs with `execution.worktree` require a Git repository with a
         clean working tree before start. Specs with `execution.gh_required` also
         require an installed, authenticated GitHub CLI (`gh auth status`). These
-        pre-flight failures are returned synchronously as `status: "error"`."""
+        pre-flight failures are returned synchronously as
+        `{run_id, status: "error", error: "..."}`."""
         return await workflow_start(
             goal, workflow=workflow, params=params, spec=spec, run_id=run_id,
             recipe_dir=recipe_dir, cwd=cwd, timeout_s=timeout_s, caps=caps,
