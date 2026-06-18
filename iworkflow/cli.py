@@ -383,7 +383,12 @@ def _cmd_sessions(providers: list[str] | None, timeout: float, as_json: bool) ->
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="iworkflow",
-        description="Subscription-only multi-agent workflow orchestrator.")
+        description="Subscription-only multi-agent workflow orchestrator.\n\n"
+                    "Environment Note: If importing iworkflow in Python scripts,\n"
+                    "run using: 'uv run python script.py'.\n"
+                    "Local CLI/MCP runs have 'read-only' and 'write' sandboxes enabled by default.",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("serve", help="run the iworkflow MCP server (stdio)")
