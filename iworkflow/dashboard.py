@@ -62,30 +62,37 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <!-- Main Body -->
   <div class="flex flex-1 overflow-hidden relative">
     
-    <!-- Graph view + visible run activity -->
-    <main class="flex-1 overflow-auto bg-slate-50 relative p-6">
-      <div class="max-w-6xl mx-auto min-h-full flex flex-col gap-4">
-        <div class="flex items-center justify-between text-sm text-slate-500 px-1">
-          <div>Haz click en un nodo para ver su detalle. La actividad del run aparece abajo en tiempo real.</div>
-          <div id="latest-output" class="font-mono text-xs text-slate-400 truncate max-w-xl">Esperando eventos...</div>
-        </div>
-
-        <section class="flex-1 min-h-[380px] flex items-center justify-center">
-          <div class="mermaid w-full max-w-4xl p-6 bg-white rounded-xl border border-slate-200 shadow-sm flex justify-center" id="mermaid-container">
-            <!-- Rendered SVG will land here -->
-            <div class="text-slate-400 text-sm animate-pulse">Cargando grafo del workflow...</div>
+    <!-- Split live view: graph as map, logs as console -->
+    <main class="flex-1 min-h-0 overflow-hidden bg-slate-50 p-5">
+      <div class="max-w-[1600px] mx-auto h-full grid grid-cols-1 xl:grid-cols-[minmax(0,1.05fr)_minmax(430px,0.95fr)] gap-5">
+        <section class="min-h-0 bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
+          <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-4">
+            <div>
+              <div class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Mapa del workflow</div>
+              <div class="text-sm text-slate-500">Click en un nodo para abrir su detalle.</div>
+            </div>
+            <div class="text-xs font-mono text-slate-400 shrink-0">graph TD</div>
+          </div>
+          <div class="flex-1 min-h-[420px] flex items-center justify-center p-6 bg-gradient-to-br from-white to-slate-50">
+            <div class="mermaid w-full max-w-4xl p-6 flex justify-center" id="mermaid-container">
+              <!-- Rendered SVG will land here -->
+              <div class="text-slate-400 text-sm animate-pulse">Cargando grafo del workflow...</div>
+            </div>
           </div>
         </section>
 
-        <section class="bg-slate-950 border border-slate-800 rounded-xl shadow-sm overflow-hidden">
-          <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+        <section class="min-h-0 bg-slate-950 border border-slate-800 rounded-2xl shadow-sm overflow-hidden flex flex-col">
+          <div class="px-5 py-4 border-b border-slate-800 flex items-start justify-between gap-4">
             <div>
               <div class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Actividad del run</div>
-              <div class="text-xs text-slate-500">Salida reciente de agentes/comandos y eventos de estado.</div>
+              <div class="text-xs text-slate-500 mt-1">Salida reciente de agentes/comandos y eventos de estado.</div>
             </div>
-            <div class="text-xs font-mono text-slate-500">events.jsonl</div>
+            <div class="text-right shrink-0">
+              <div class="text-xs font-mono text-slate-500">events.jsonl</div>
+              <div id="latest-output" class="font-mono text-xs text-emerald-300/80 truncate max-w-[300px] mt-1">Esperando eventos...</div>
+            </div>
           </div>
-          <div id="run-log" class="h-56 overflow-y-auto p-4 space-y-2 font-mono text-xs text-slate-300">
+          <div id="run-log" class="flex-1 min-h-[420px] overflow-y-auto p-4 space-y-2 font-mono text-xs text-slate-300">
             <div class="text-slate-500 italic">Aún no hay eventos.</div>
           </div>
         </section>
@@ -433,7 +440,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
       events.forEach(ev => {
         const row = document.createElement('div');
-        row.className = 'grid grid-cols-[84px_180px_1fr] gap-3 items-start border-l-2 pl-3 py-1 ' +
+        row.className = 'grid grid-cols-[76px_minmax(120px,160px)_1fr] gap-3 items-start border-l-2 pl-3 py-1 ' +
           (ev.event === 'done' ? 'border-emerald-500 text-emerald-100' :
            ev.event === 'error' || ev.event === 'timeout' || ev.event === 'exhausted' ? 'border-red-500 text-red-100' :
            ev.event === 'dispatch' ? 'border-blue-500 text-blue-100' : 'border-slate-700');
