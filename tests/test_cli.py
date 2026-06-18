@@ -3,7 +3,7 @@ import json
 import pytest
 
 from iworkflow.cli import (
-    RegisterError, register_claude, register_codex, unregister_claude, unregister_codex,
+    RegisterError, main, register_claude, register_codex, unregister_claude, unregister_codex,
 )
 
 
@@ -220,3 +220,25 @@ def test_cli_run_forwards_allow_tools(monkeypatch, tmp_path):
     main(["run", "--spec", str(spec_file), "--deny-tools"])
     assert len(calls) == 1
     assert calls[0].get("allow_tools") is False
+
+
+def test_cli_run_generates_unique_run_id_by_default(tmp_path, capsys, monkeypatch):
+    import iworkflow.mcp_server as mcp_server
+
+    spec = tmp_path / "empty.json"
+    spec.write_text(json.dumps({"steps": [{"id": "noop", "kind": "agent", "prompt": "noop"}]}))
+
+    async def fake_run_workflow(**kwargs):
+        return {"run_id": kwargs["run_id"]}
+
+    monkeypatch.setattr(mcp_server, "run_workflow", fake_run_workflow)
+
+    main(["run", "--spec", str(spec)])
+    first = json.loads(capsys.readouterr().out)
+
+    main(["run", "--spec", str(spec)])
+    second = json.loads(capsys.readouterr().out)
+
+    assert first["run_id"].startswith("cli-")
+    assert second["run_id"].startswith("cli-")
+    assert first["run_id"] != second["run_id"]

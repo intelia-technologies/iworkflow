@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import time
 import tomllib
+import uuid
 from pathlib import Path
 
 # The command an agent CLI will spawn for the MCP server. `iworkflow-mcp` is the
@@ -210,8 +213,17 @@ def _cmd_workflows(recipe_dir: str | None) -> None:
         print(f"  {'':16} params: {params}")
 
 
+def _default_cli_run_id() -> str:
+    """Return a unique run id for one CLI invocation.
+
+    Explicit --run-id still gives resume/append semantics. The implicit CLI run id
+    must not append unrelated invocations into the same events.jsonl.
+    """
+    return f"cli-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+
 def _cmd_run(name: str | None, goal: str | None, params_json: str | None,
-             spec_path: str | None, run_id: str, recipe_dir: str | None,
+             spec_path: str | None, run_id: str | None, recipe_dir: str | None,
              cwd: str | None, timeout_s: float, caps_json: str | None,
              journal_dir: str, allow_tools: bool = True) -> None:
     import asyncio
@@ -221,12 +233,13 @@ def _cmd_run(name: str | None, goal: str | None, params_json: str | None,
     params = json.loads(params_json) if params_json else None
     spec = json.loads(Path(spec_path).read_text(encoding="utf-8")) if spec_path else None
     caps = json.loads(caps_json) if caps_json else None
+    effective_run_id = run_id or _default_cli_run_id()
     result = asyncio.run(run_workflow(
         goal=goal,
         workflow=name,
         params=params,
         spec=spec,
-        run_id=run_id,
+        run_id=effective_run_id,
         recipe_dir=recipe_dir,
         cwd=cwd,
         timeout_s=timeout_s,
@@ -415,7 +428,7 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("--goal", default=None, help="shorthand for fan_synthesize over a question")
     p_run.add_argument("--params", default=None, help="JSON params object")
     p_run.add_argument("--spec", default=None, help="path to a declarative workflow spec JSON")
-    p_run.add_argument("--run-id", default="cli")
+    p_run.add_argument("--run-id", default=None, help="run id for resume/status; omitted creates a unique cli-* run")
     p_run.add_argument("--recipe-dir", default=None)
     p_run.add_argument("--cwd", default=None, help="working directory for provider CLIs")
     p_run.add_argument("--timeout", type=float, default=180, help="per-provider timeout (seconds)")

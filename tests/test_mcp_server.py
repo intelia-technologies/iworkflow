@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+import pytest
+
 from iworkflow.mcp_server import (
     check_sessions,
     SYNC_WORKFLOW_DOC,
@@ -195,6 +197,7 @@ def test_workflow_start_failure_reporting(tmp_path):
 
 def test_workflow_stream_terminal_states(tmp_path):
     import time
+
     t_start = time.time()
     res = asyncio.run(workflow_stream(
         "non-existent-run",
@@ -205,3 +208,34 @@ def test_workflow_stream_terminal_states(tmp_path):
     duration = time.time() - t_start
     assert res["status"] == "not_found"
     assert duration < 1.0
+
+    (tmp_path / "runs" / "empty-run").mkdir(parents=True)
+    t_start = time.time()
+    res = asyncio.run(workflow_stream(
+        "empty-run",
+        journal_dir=str(tmp_path),
+        after=0,
+        block_s=5.0,
+    ))
+    duration = time.time() - t_start
+    assert res["status"] == "failed_to_start"
+    assert duration < 1.0
+
+
+def test_run_workflow_logs_emit_failure(tmp_path, capsys):
+    class BrokenEmitRunner:
+        def _emit(self, *args, **kwargs):
+            raise OSError("disk full")
+
+    async def _run() -> None:
+        with pytest.raises(Exception):
+            await run_workflow(
+                spec={"steps": [{"id": "missing-kind"}]},
+                runner=BrokenEmitRunner(),
+                journal_dir=str(tmp_path),
+            )
+
+    asyncio.run(_run())
+    err = capsys.readouterr().err
+    assert "failed to write run error event" in err
+    assert "disk full" in err

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -267,9 +268,12 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
     except Exception as e:
         try:
             r._emit("run", "error", error=str(e))
-        except Exception:
-            pass
-        raise e
+        except Exception as emit_error:  # noqa: BLE001
+            print(
+                f"iworkflow: failed to write run error event for {rid}: {emit_error}",
+                file=sys.stderr,
+            )
+        raise
 
 
 async def workflow_start(goal: str | None = None, *, workflow: str | None = None,
@@ -458,7 +462,12 @@ def main() -> None:
 
         `caps` sets per-provider concurrency, e.g. {"codex": 2, "gemini": 2}.
         `catalog_root` loads MCP/skills/commands from a repo (same as CLI catalog).
-        `recipe_dir` adds host recipes from `.iworkflow/recipes` or a custom path."""
+        `recipe_dir` adds host recipes from `.iworkflow/recipes` or a custom path.
+
+        Recipes/specs with `execution.worktree` require a Git repository with a
+        clean working tree before start. Specs with `execution.gh_required` also
+        require an installed, authenticated GitHub CLI (`gh auth status`). These
+        pre-flight failures are returned synchronously as `status: "error"`."""
         return await workflow_start(
             goal, workflow=workflow, params=params, spec=spec, run_id=run_id,
             recipe_dir=recipe_dir, cwd=cwd, timeout_s=timeout_s, caps=caps,
@@ -505,7 +514,8 @@ def main() -> None:
 
         Returns new events since `after` (line offset). Use the returned
         `next_after` on the next call. Set `block_s` to long-poll for new events
-        (default 5s). When `status` is `done` or `error`, `result` is included."""
+        (default 5s). Terminal statuses include `done`, `error`,
+        `failed_to_start`, and `not_found`; `result` is included when available."""
         return await workflow_stream(
             run_id, journal_dir=journal_dir, after=after,
             block_s=block_s, limit=limit,
