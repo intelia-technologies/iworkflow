@@ -243,6 +243,8 @@ def render_step(step: dict[str, Any], ctx: dict[str, Any],
         return render_pipeline(step_id, step, ctx)
     elif kind == "loop":
         return render_loop(step_id, step, ctx, depth)
+    elif kind == "command":
+        return f'    {step_id}["{step_id} (command)"]', step_id, step_id
     else:
         return f'    {step_id}["{_text(step_id, ctx)} (unknown: {_esc(kind)})"]', step_id, step_id
 

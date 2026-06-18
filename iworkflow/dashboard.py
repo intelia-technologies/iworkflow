@@ -314,10 +314,10 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
       // Build updated mermaid code
       let code = baseMermaid;
-      code += '\\n\\nclassDef pending fill:#f8fafc,stroke:#cbd5e1,color:#475569;';
-      code += '\\nclassDef running fill:#eff6ff,stroke:#3b82f6,stroke-width:2.5px,color:#1d4ed8;';
-      code += '\\nclassDef done fill:#f0fdf4,stroke:#22c55e,color:#15803d;';
-      code += '\\nclassDef error fill:#fef2f2,stroke:#ef4444,color:#b91c1c;\\n';
+      code += '\\n\\nclassDef pending fill:#f8fafc,stroke:#cbd5e1,color:#475569';
+      code += '\\nclassDef running fill:#eff6ff,stroke:#3b82f6,stroke-width:2.5px,color:#1d4ed8';
+      code += '\\nclassDef done fill:#f0fdf4,stroke:#22c55e,color:#15803d';
+      code += '\\nclassDef error fill:#fef2f2,stroke:#ef4444,color:#b91c1c\\n';
 
       // Set class for each node in spec
       function applyClasses(steps) {

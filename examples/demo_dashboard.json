@@ -1,0 +1,23 @@
+{
+  "name": "demo_dashboard",
+  "description": "Un ejemplo tonto de 3 pasos secuenciales con comandos locales (sin coste de tokens) para probar el Live Dashboard en tiempo real.",
+  "steps": [
+    {
+      "id": "iniciar_proceso",
+      "kind": "command",
+      "command": "echo 'Arrancando motores...' && sleep 3"
+    },
+    {
+      "id": "compilar_recursos",
+      "kind": "command",
+      "needs": ["iniciar_proceso"],
+      "command": "echo 'Compilando assets estáticos...' && sleep 4"
+    },
+    {
+      "id": "ejecutar_pruebas",
+      "kind": "command",
+      "needs": ["compilar_recursos"],
+      "command": "echo 'Corriendo suite de verificación...' && sleep 3"
+    }
+  ]
+}
