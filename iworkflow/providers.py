@@ -146,12 +146,27 @@ class Provider:
         stdin: str,
         cwd: str | None = None,
     ) -> tuple[int, str, str]:
+        import os
+        from pathlib import Path
+        env = dict(os.environ)
+        home = Path.home()
+        extra_paths = [
+            str(home / ".local" / "bin"),
+            str(home / ".bun" / "bin"),
+            str(home / ".antigravity" / "antigravity" / "bin"),
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
+        current_path = env.get("PATH", "")
+        env["PATH"] = os.pathsep.join(extra_paths + [current_path] if current_path else extra_paths)
+
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            env=env,
         )
         try:
             out, err = await asyncio.wait_for(
