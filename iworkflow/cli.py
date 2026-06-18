@@ -317,7 +317,36 @@ def _cmd_graph(name: str | None, spec_path: str | None, html_path: str | None,
         except Exception:
             pass
 
-def _cmd_models(as_json: bool) -> None:
+def _cmd_models(as_json: bool, update: bool = False) -> None:
+    if update:
+        import os
+        import urllib.request
+        import json
+        import sys
+        from pathlib import Path
+        url = os.environ.get(
+            "IWORKFLOW_MODELS_URL",
+            "https://raw.githubusercontent.com/pablomuniz/iworkflow/main/specs/models.json"
+        )
+        print(f"Fetching latest models catalog from {url}...")
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "iworkflow-cli"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                content = response.read().decode("utf-8")
+                # Validate JSON syntax
+                json.loads(content)
+                dest = Path.home() / ".iworkflow" / "models.json"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(content, encoding="utf-8")
+                print(f"Successfully updated models catalog at {dest}")
+        except Exception as e:
+            print(f"Failed to update models catalog: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
     from .provider_models import list_provider_models
     report = list_provider_models()
     if as_json:
@@ -398,6 +427,7 @@ def main(argv: list[str] | None = None) -> None:
 
     p_models = sub.add_parser("models", help="list models exposed by each provider CLI")
     p_models.add_argument("--json", action="store_true", help="emit JSON catalog")
+    p_models.add_argument("--update", action="store_true", help="update models catalog from remote repository")
 
     p_sess = sub.add_parser("sessions", help="check which subscription CLIs are logged in")
     p_sess.add_argument(
@@ -426,7 +456,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "graph":
         _cmd_graph(args.name, args.spec, args.html, args.publish, args.recipe_dir, args.mermaid)
     elif args.cmd == "models":
-        _cmd_models(args.json)
+        _cmd_models(args.json, args.update)
     elif args.cmd == "sessions":
         _cmd_sessions(args.providers, args.timeout, args.json)
 

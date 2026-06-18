@@ -1,0 +1,135 @@
+{
+  "providers": {
+    "codex": {
+      "label": "OpenAI Codex (ChatGPT subscription)",
+      "cli": "codex exec -m <model>",
+      "login": "codex login",
+      "default": null,
+      "models": {
+        "gpt-5.4": {
+          "label": "GPT-5.4",
+          "aliases": ["5.4"],
+          "notes": "Structured codegen; native --output-schema"
+        },
+        "gpt-5.5": {
+          "label": "GPT-5.5",
+          "aliases": ["5.5", "default"]
+        }
+      }
+    },
+    "claude": {
+      "label": "Claude (interactive TUI via tmux, Pool 1 subscription)",
+      "cli": "claude --model <model>",
+      "login": "claude auth login",
+      "default": null,
+      "models": {
+        "opus": {
+          "label": "Claude Opus",
+          "aliases": ["claude-opus-4-6"],
+          "notes": "Deep reasoning; scarce weekly quota"
+        },
+        "sonnet": {
+          "label": "Claude Sonnet",
+          "aliases": ["claude-sonnet-4-6", "sonnet-4.6"]
+        }
+      }
+    },
+    "gemini": {
+      "label": "Gemini (agy / Antigravity, Google subscription)",
+      "cli": "agy -p --model <name>",
+      "login": "Antigravity / agy install (agy models lists session)",
+      "default": "Gemini 3.5 Flash (Medium)",
+      "models": {
+        "Gemini 3.5 Flash (Medium)": {
+          "label": "Gemini 3.5 Flash (Medium)",
+          "aliases": ["gemini-3.5-flash", "flash", "3.5-flash"]
+        },
+        "Gemini 3.5 Flash (High)": {
+          "label": "Gemini 3.5 Flash (High)",
+          "aliases": ["flash-high"]
+        },
+        "Gemini 3.5 Flash (Low)": {
+          "label": "Gemini 3.5 Flash (Low)",
+          "aliases": ["flash-low"]
+        },
+        "Gemini 3.1 Pro (High)": {
+          "label": "Gemini 3.1 Pro (High)",
+          "aliases": ["pro", "gemini-3.1-pro"]
+        }
+      }
+    },
+    "cursor": {
+      "label": "Cursor Agent (Cursor subscription)",
+      "cli": "cursor-agent -p --model <model>",
+      "login": "cursor-agent login",
+      "default": "composer-2.5",
+      "models": {
+        "composer-2.5": {
+          "label": "Composer 2.5",
+          "aliases": ["composer", "2.5"],
+          "notes": "Repo-aware codegen and review"
+        },
+        "composer-2.5-fast": {
+          "label": "Composer 2.5 Fast",
+          "aliases": ["flash", "composer-flash", "2.5-fast", "composer-2.5-flash"],
+          "notes": "Fast fan-out / classify (cursor-agent default)"
+        }
+      }
+    }
+  },
+  "capabilities": {
+    "codex": {
+      "model": "GPT-5.x-codex (codex exec, ChatGPT login)",
+      "great_at": [
+        "code implementation",
+        "spec-following codegen",
+        "refactors",
+        "tool use",
+        "structured output"
+      ],
+      "weak_at": [
+        "very long context",
+        "open-ended prose"
+      ]
+    },
+    "gemini": {
+      "model": "Gemini (agy / Antigravity, Google login)",
+      "great_at": [
+        "1M+ context sweeps",
+        "broad codebase analysis",
+        "fast classification",
+        "independent adversarial audit"
+      ],
+      "weak_at": [
+        "native structured output (none)",
+        "fine-grained code edits"
+      ]
+    },
+    "claude": {
+      "model": "Claude Opus/Sonnet (interactive TUI via tmux, Pool 1)",
+      "great_at": [
+        "deep reasoning",
+        "delicate refactors",
+        "architecture & judgment",
+        "nuanced writing",
+        "careful final integration"
+      ],
+      "weak_at": [
+        "being abundant — shared weekly subscription limit"
+      ]
+    },
+    "cursor": {
+      "model": "Composer 2.5 / 2.5 Flash (see provider_models)",
+      "great_at": [
+        "repo-aware codegen",
+        "fast implementation",
+        "tool use",
+        "review in project context"
+      ],
+      "weak_at": [
+        "native structured output (none)",
+        "headless without login"
+      ]
+    }
+  }
+}

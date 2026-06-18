@@ -14,6 +14,9 @@ could promote whichever provider wins a given task-kind over time.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 # --- What each model is good at (the thing to tune) ----------------------
 CAPABILITIES = {
     "codex": {
@@ -57,6 +60,16 @@ CAPABILITIES = {
         "scarcity": "medium",
     },
 }
+
+# Load dynamic capabilities config override
+MODELS_FILE = Path.home() / ".iworkflow" / "models.json"
+if MODELS_FILE.is_file():
+    try:
+        data = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and "capabilities" in data:
+            CAPABILITIES.update(data["capabilities"])
+    except Exception:
+        pass
 
 # --- Task-kind → ordered provider preference -----------------------------
 # Claude is USED where it earns its scarce quota (reason/write/core), and kept

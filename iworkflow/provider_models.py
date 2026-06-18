@@ -9,6 +9,8 @@ Legacy alias `cursor_flash` -> provider `cursor` + model `composer-2.5-flash`.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 PROVIDER_MODELS: dict[str, dict[str, Any]] = {
@@ -95,6 +97,18 @@ LEGACY_PROVIDER_ALIASES: dict[str, tuple[str, str | None]] = {
 }
 
 RoutingTarget = tuple[str, str | None]
+
+# Load dynamic model config override
+MODELS_FILE = Path.home() / ".iworkflow" / "models.json"
+if MODELS_FILE.is_file():
+    try:
+        data = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            providers = data.get("providers") if "providers" in data else data
+            if isinstance(providers, dict):
+                PROVIDER_MODELS.update(providers)
+    except Exception:
+        pass
 
 
 def _alias_index() -> dict[tuple[str, str], str]:
