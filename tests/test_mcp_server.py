@@ -433,12 +433,20 @@ def test_dashboard_server_api_endpoints(tmp_path):
     assert 'id="run-log"' in HTML_DASHBOARD
     assert "Actividad del run" in HTML_DASHBOARD
     assert "Mapa del workflow" in HTML_DASHBOARD
-    assert "xl:grid-cols" in HTML_DASHBOARD
+    assert "lg:grid-cols" in HTML_DASHBOARD
     assert "clearStepSelection" in HTML_DASHBOARD
     assert "openSelectedDetail" in HTML_DASHBOARD
     assert "Mostrando solo la salida" in HTML_DASHBOARD
     assert "classDef selected" in HTML_DASHBOARD
     assert "Filtrar logs de" in HTML_DASHBOARD
+    assert "Respuesta del LLM" in HTML_DASHBOARD
+    assert "formatCodexJson" in HTML_DASHBOARD
+    assert "formatUnparsedOutputLine" in HTML_DASHBOARD
+    assert "salida extensa compactada" in HTML_DASHBOARD
+    assert "Fragmento stdout del CLI compactado" in HTML_DASHBOARD
+    assert "overflowWrap" in HTML_DASHBOARD
+    assert "col-span-3" in HTML_DASHBOARD
+    assert "msg.dataset.kind = 'assistant'" in HTML_DASHBOARD
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("localhost", 0))

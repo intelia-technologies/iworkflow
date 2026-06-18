@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 
 import pytest
@@ -63,7 +64,7 @@ def test_exec_runs_subprocess_in_cwd(tmp_path):
     assert stdout.strip() == str(tmp_path)
 
 
-def test_exec_emits_output_chunks(tmp_path):
+def test_exec_emits_output_lines(tmp_path):
     provider = Provider("base")
     events = []
 
@@ -84,8 +85,34 @@ def test_exec_emits_output_chunks(tmp_path):
     assert code == 0
     assert stderr == ""
     assert stdout == "alpha\nomega\n"
-    assert "alpha" in "".join(fields["text"] for event, fields in events if event == "output")
-    assert "omega" in "".join(fields["text"] for event, fields in events if event == "output")
+    output_events = [fields["text"] for event, fields in events if event == "output"]
+    assert output_events == ["alpha\n", "omega\n"]
+
+
+def test_exec_does_not_split_long_jsonl_events(tmp_path):
+    provider = Provider("base")
+    events = []
+    payload = {"type": "item.completed", "item": {"type": "agent_message", "text": "x" * 9000}}
+
+    code, stdout, stderr = asyncio.run(
+        provider._exec(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                "import json; print(" + repr(json.dumps(payload)) + ")",
+            ],
+            "",
+            cwd=str(tmp_path),
+            on_event=lambda event, fields: events.append((event, fields)),
+        )
+    )
+
+    assert code == 0
+    assert stderr == ""
+    assert stdout == json.dumps(payload) + "\n"
+    output_events = [fields["text"] for event, fields in events if event == "output"]
+    assert output_events == [json.dumps(payload) + "\n"]
 
 
 def test_claude_interactive_starts_tmux_session_in_cwd(tmp_path, monkeypatch):

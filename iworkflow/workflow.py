@@ -898,14 +898,34 @@ class _Executor:
         async def read_stream(stream: asyncio.StreamReader | None, name: str, parts: list[bytes]) -> None:
             if stream is None:
                 return
+            buffer = bytearray()
+
+            def emit(data: bytes) -> None:
+                if not data:
+                    return
+                parts.append(data)
+                text = data.decode(errors="replace")
+                if text:
+                    self.runner._emit(label, "output", provider="local", stream=name, text=text)
+
             while True:
                 chunk = await stream.read(4096)
                 if not chunk:
                     break
-                parts.append(chunk)
-                text = chunk.decode(errors="replace")
-                if text:
-                    self.runner._emit(label, "output", provider="local", stream=name, text=text)
+                buffer.extend(chunk)
+                while True:
+                    newline = buffer.find(b"\n")
+                    if newline < 0:
+                        break
+                    line = bytes(buffer[: newline + 1])
+                    del buffer[: newline + 1]
+                    emit(line)
+                if len(buffer) > 1_000_000:
+                    emit(bytes(buffer))
+                    buffer.clear()
+
+            if buffer:
+                emit(bytes(buffer))
 
         try:
             await asyncio.wait_for(

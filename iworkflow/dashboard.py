@@ -63,9 +63,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
   <div class="flex flex-1 overflow-hidden relative">
     
     <!-- Split live view: graph as map, logs as console -->
-    <main class="flex-1 min-h-0 overflow-hidden bg-slate-50 p-5">
-      <div class="max-w-[1600px] mx-auto h-full grid grid-cols-1 xl:grid-cols-[minmax(0,1.05fr)_minmax(430px,0.95fr)] gap-5">
-        <section class="min-h-0 bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
+    <main class="flex-1 min-h-0 overflow-hidden bg-slate-50 p-4">
+      <div class="max-w-none mx-auto h-full min-w-0 grid grid-cols-1 lg:grid-cols-[minmax(320px,0.82fr)_minmax(0,1.18fr)] gap-4">
+        <section class="min-w-0 min-h-0 bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
           <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-4">
             <div>
               <div class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Mapa del workflow</div>
@@ -73,7 +73,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
             </div>
             <div class="text-xs font-mono text-slate-400 shrink-0">graph TD</div>
           </div>
-          <div class="flex-1 min-h-[420px] flex items-center justify-center p-6 bg-gradient-to-br from-white to-slate-50">
+          <div class="flex-1 min-h-[320px] flex items-center justify-center p-4 bg-gradient-to-br from-white to-slate-50">
             <div class="mermaid w-full max-w-4xl p-6 flex justify-center" id="mermaid-container">
               <!-- Rendered SVG will land here -->
               <div class="text-slate-400 text-sm animate-pulse">Cargando grafo del workflow...</div>
@@ -81,7 +81,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
           </div>
         </section>
 
-        <section class="min-h-0 bg-slate-950 border border-slate-800 rounded-2xl shadow-sm overflow-hidden flex flex-col">
+        <section class="min-w-0 min-h-0 bg-slate-950 border border-slate-800 rounded-2xl shadow-sm overflow-hidden flex flex-col">
           <div class="px-5 py-4 border-b border-slate-800 flex items-start justify-between gap-4">
             <div>
               <div class="text-xs uppercase tracking-wider text-slate-400 font-semibold" id="run-log-title">Actividad del run</div>
@@ -98,7 +98,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
               </div>
             </div>
           </div>
-          <div id="run-log" class="flex-1 min-h-[420px] overflow-y-auto p-4 space-y-2 font-mono text-xs text-slate-300">
+          <div id="run-log" class="flex-1 min-h-[320px] overflow-y-auto overflow-x-hidden p-4 space-y-2 font-mono text-xs text-slate-300">
             <div class="text-slate-500 italic">Aún no hay eventos.</div>
           </div>
         </section>
@@ -476,6 +476,121 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       });
     }
 
+    function compactCommand(command) {
+      if (!command) return 'herramienta';
+      const text = String(command).replace(/\\s+/g, ' ').trim();
+      return text.length > 120 ? text.slice(0, 117) + '…' : text;
+    }
+
+    function formatCodexJson(obj) {
+      if (!obj || typeof obj !== 'object') return null;
+      if (obj.type === 'thread.started') return {kind: 'meta', text: 'Conversación LLM iniciada'};
+      if (obj.type === 'turn.started') return {kind: 'meta', text: 'El LLM empezó a razonar'};
+      if (obj.type === 'turn.completed') {
+        const u = obj.usage || {};
+        const parts = [];
+        if (u.input_tokens !== undefined) parts.push(`${u.input_tokens} input`);
+        if (u.cached_input_tokens !== undefined) parts.push(`${u.cached_input_tokens} cached`);
+        if (u.output_tokens !== undefined) parts.push(`${u.output_tokens} output`);
+        if (u.reasoning_output_tokens !== undefined) parts.push(`${u.reasoning_output_tokens} reasoning`);
+        return {kind: 'meta', text: parts.length ? `Turno LLM completado · ${parts.join(' · ')}` : 'Turno LLM completado'};
+      }
+      if (obj.type === 'item.started') {
+        const item = obj.item || {};
+        if (item.type === 'command_execution') return {kind: 'tool', text: `Herramienta iniciada: ${compactCommand(item.command)}`};
+        return {kind: 'meta', text: `${item.type || 'item'} iniciado`};
+      }
+      if (obj.type === 'item.completed') {
+        const item = obj.item || {};
+        if (item.type === 'agent_message') {
+          return {kind: 'assistant', text: item.text || '(respuesta vacía)'};
+        }
+        if (item.type === 'command_execution') {
+          const status = item.status ? ` · ${item.status}` : '';
+          const exit = item.exit_code !== undefined && item.exit_code !== null ? ` · exit=${item.exit_code}` : '';
+          return {kind: 'tool', text: `Herramienta completada: ${compactCommand(item.command)}${status}${exit}`};
+        }
+        return {kind: 'meta', text: `${item.type || 'item'} completado`};
+      }
+      if (obj.type) return {kind: 'meta', text: obj.type};
+      return null;
+    }
+
+    function formatUnparsedOutputLine(line, ev) {
+      const trimmed = String(line || '').trim();
+      if (trimmed.startsWith('{') && trimmed.includes('"type"')) {
+        if (trimmed.includes('"command_execution"') || trimmed.includes('"aggregated_output"')) {
+          return {kind: 'tool', text: 'Herramienta: salida extensa compactada'};
+        }
+        if (trimmed.includes('"agent_message"')) {
+          return {kind: 'assistant', text: 'Respuesta del LLM recibida en un fragmento JSON parcial. El próximo run la mostrará completa por el line-buffering nuevo.'};
+        }
+        return {kind: 'meta', text: 'Evento JSONL parcial compactado'};
+      }
+      const nonLocalProvider = ev.provider && ev.provider !== 'local';
+      const looksLikeEscapedFragment = trimmed.includes('\\n') || trimmed.includes('\\"') || trimmed.length > 500;
+      if (nonLocalProvider && looksLikeEscapedFragment) {
+        return {kind: 'tool', text: 'Fragmento stdout del CLI compactado'};
+      }
+      return {kind: 'raw', text: `[${ev.stream || 'stdout'}] ${line}`};
+    }
+
+    function formatOutputEvent(ev) {
+      const raw = String(ev.text || '');
+      const lines = raw.split('\\n').filter(line => line.length > 0);
+      if (lines.length === 0) return {kind: 'raw', text: `[${ev.stream || 'stdout'}]`};
+
+      const formatted = [];
+      let parsedAny = false;
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          const human = formatCodexJson(parsed);
+          if (human) {
+            parsedAny = true;
+            formatted.push(human);
+            continue;
+          }
+        } catch (_) {
+          // Non-JSON provider output: keep it as process text.
+        }
+        formatted.push(formatUnparsedOutputLine(line, ev));
+      }
+
+      const compactedAny = formatted.some(part => part.kind !== 'raw');
+      if (!parsedAny && !compactedAny) return {kind: 'raw', text: `[${ev.stream || 'stdout'}] ${raw.trimEnd()}`};
+      const priority = formatted.find(part => part.kind === 'assistant')
+        || formatted.find(part => part.kind === 'tool')
+        || formatted[formatted.length - 1];
+      return {
+        kind: priority.kind,
+        text: formatted.map(part => {
+          if (part.kind === 'assistant') return `Respuesta del LLM:\\n\\n${part.text}`;
+          if (part.kind === 'tool') return part.text;
+          return part.text;
+        }).join('\\n\\n'),
+      };
+    }
+
+    function formatEventForLog(ev) {
+      if (ev.event === 'output' && ev.text) return formatOutputEvent(ev);
+      if (ev.event === 'dispatch') return {kind: 'meta', text: `started ${ev.provider || ''}`.trim()};
+      if (ev.event === 'route') return {kind: 'meta', text: `route: ${ev.order || ev.provider || 'selected'}`};
+      if (ev.event === 'done') {
+        const tokens = ev.input_tokens !== undefined || ev.output_tokens !== undefined
+          ? ` · tokens ${ev.input_tokens || 0} in / ${ev.output_tokens || 0} out`
+          : '';
+        return {kind: 'done', text: `done${ev.ms ? ` in ${ev.ms}ms` : ''}${ev.exit_code !== undefined ? ` exit=${ev.exit_code}` : ''}${tokens}`};
+      }
+      if (ev.event === 'timeout') return {kind: 'error', text: `timeout${ev.timeout_s ? ` after ${ev.timeout_s}s` : ''}`};
+      return {kind: 'meta', text: ev.event.toUpperCase()};
+    }
+
+    function summarizeEvent(ev) {
+      const formatted = formatEventForLog(ev);
+      return formatted.text.replace(/\\s+/g, ' ').trim().slice(0, 120);
+    }
+
     function updateRunLog() {
       const log = document.getElementById('run-log');
       const latest = document.getElementById('latest-output');
@@ -509,45 +624,48 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       const lastOutput = [...events].reverse().find(e => e.event === 'output' && e.text);
       const lastEvent = events[events.length - 1];
       latest.innerText = lastOutput
-        ? `${lastOutput.label}: ${lastOutput.text.trim().slice(-100)}`
-        : `${lastEvent.label || 'run'}: ${lastEvent.event}`;
+        ? `${lastOutput.label}: ${summarizeEvent(lastOutput)}`
+        : `${lastEvent.label || 'run'}: ${summarizeEvent(lastEvent)}`;
 
       events.forEach(ev => {
         const row = document.createElement('div');
-        row.className = 'grid grid-cols-[76px_minmax(120px,160px)_1fr] gap-3 items-start border-l-2 pl-3 py-1 ' +
+        row.className = 'grid min-w-0 grid-cols-[92px_minmax(110px,150px)_minmax(0,1fr)] gap-3 items-start border-l-2 pl-3 py-1 ' +
           (ev.event === 'done' ? 'border-emerald-500 text-emerald-100' :
            ev.event === 'error' || ev.event === 'timeout' || ev.event === 'exhausted' ? 'border-red-500 text-red-100' :
            ev.event === 'dispatch' ? 'border-blue-500 text-blue-100' : 'border-slate-700');
 
         const time = document.createElement('div');
-        time.className = 'text-slate-500';
+        time.className = 'text-slate-500 whitespace-nowrap';
         time.innerText = new Date(ev.ts * 1000).toLocaleTimeString();
 
         const label = document.createElement('button');
-        label.className = 'text-left text-slate-300 hover:text-white underline-offset-2 hover:underline';
+        label.className = 'min-w-0 truncate text-left text-slate-300 hover:text-white underline-offset-2 hover:underline';
         label.innerText = ev.label || 'run';
         if (ev.label) label.onclick = () => window.selectStep(normalizedStepId(ev.label));
 
         const msg = document.createElement('div');
-        msg.className = 'whitespace-pre-wrap break-words';
-        if (ev.event === 'output' && ev.text) {
-          msg.innerText = `[${ev.stream || 'stdout'}] ${ev.text.trimEnd()}`;
-        } else if (ev.event === 'dispatch') {
-          msg.innerText = `started ${ev.provider || ''}`.trim();
-        } else if (ev.event === 'done') {
-          msg.innerText = `done${ev.ms ? ` in ${ev.ms}ms` : ''}${ev.exit_code !== undefined ? ` exit=${ev.exit_code}` : ''}`;
-        } else if (ev.event === 'timeout') {
-          msg.innerText = `timeout${ev.timeout_s ? ` after ${ev.timeout_s}s` : ''}`;
-        } else {
-          msg.innerText = ev.event.toUpperCase();
+        const formatted = formatEventForLog(ev);
+        msg.className = 'min-w-0 whitespace-pre-wrap break-words leading-relaxed';
+        msg.style.overflowWrap = 'anywhere';
+        if (formatted.kind === 'assistant') {
+          msg.dataset.kind = 'assistant';
+          msg.className += ' col-span-3 rounded-lg border border-emerald-900/60 bg-slate-900/80 p-3 text-slate-100';
+        } else if (formatted.kind === 'tool') {
+          msg.className += ' text-slate-400';
         }
+        msg.innerText = formatted.text;
 
         row.appendChild(time);
         row.appendChild(label);
         row.appendChild(msg);
         log.appendChild(row);
       });
-      log.scrollTop = log.scrollHeight;
+      const firstAssistant = selectedStepId ? log.querySelector('[data-kind="assistant"]') : null;
+      if (firstAssistant) {
+        log.scrollTop = Math.max(0, firstAssistant.offsetTop - log.offsetTop - 8);
+      } else {
+        log.scrollTop = log.scrollHeight;
+      }
     }
 
     init();

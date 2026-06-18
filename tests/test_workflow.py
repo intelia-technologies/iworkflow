@@ -94,11 +94,12 @@ def test_command_step_emits_progress_events(tmp_path):
     assert out["status"] == "DONE"
     events_path = tmp_path / "runs" / "wf" / "events.jsonl"
     events = [json.loads(line) for line in events_path.read_text().splitlines()]
-    assert [e["event"] for e in events] == ["dispatch", "output", "done"]
+    assert [e["event"] for e in events] == ["dispatch", "output", "output", "done"]
     assert events[0]["label"] == "cmd"
     assert events[0]["provider"] == "local"
     assert events[1]["stream"] == "stdout"
-    assert "one" in events[1]["text"]
+    assert events[1]["text"] == "one\n"
+    assert events[2]["text"] == "two\n"
     assert events[-1]["exit_code"] == 0
 
 
