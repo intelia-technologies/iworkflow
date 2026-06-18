@@ -447,8 +447,9 @@ BRAINSTORM: dict[str, Any] = {
             "heartbeat_interval_s": 15,
             "tools": ["write"],
             "sandbox": "write",
+            "write_paths": ["openspec/changes/{{params.change_name}}/brainstorm.md"],
             "instructions": { "gh": "gh pr create --title 'Brainstorm: {{params.change_name}}' --body 'Generated via iworkflow'" },
-            "prompt": "Write the final brainstorm to 'openspec/changes/{{params.change_name}}/brainstorm.md' using the standard template. Selected direction: {{steps.phase5_dialogue_loop.value}}. Original proposals: {{steps.phase4_proposals.value}}."
+            "prompt": "Write ONLY to 'openspec/changes/{{params.change_name}}/brainstorm.md'. Do not modify docs/, README, or any other path. Use the standard brainstorm template. Selected direction: {{steps.phase5_dialogue_loop.value}}. Original proposals: {{steps.phase4_proposals.value}}."
         },
         {
             "id": "phase7_update_wiki",
@@ -459,7 +460,8 @@ BRAINSTORM: dict[str, Any] = {
             "heartbeat_interval_s": 15,
             "tools": ["write"],
             "sandbox": "write",
-            "prompt": "Update the wiki in 'thoughts/shared/wiki/' with the new domain knowledge from this brainstorm."
+            "write_paths": ["thoughts/shared/wiki/"],
+            "prompt": "Update ONLY files under 'thoughts/shared/wiki/' with the new domain knowledge from this brainstorm. Do not modify docs/, README, or any other path."
         },
         {
             "id": "phase8_handoff",

@@ -180,7 +180,7 @@ artifact paths resolve against workflow `cwd`.
 
 | kind | what it does | key fields |
 |---|---|---|
-| `agent` | one worker call | `prompt`, `schema?`, `prefer?`, `role?`, `gate?`, `sandbox?`, `tools?`, `required?` |
+| `agent` | one worker call | `prompt`, `schema?`, `prefer?`, `role?`, `gate?`, `sandbox?`, `tools?`, `write_paths?`, `required?` |
 | `parallel` | fan-out **barrier** of agents | `agents:[…]` |
 | `pipeline` | per-item staged flow, **no barrier** between stages | `items` (→list), `stages:[…]` |
 | `loop` | repeat a `body` until a stop condition | `body:[…]`, `until`, `max_iterations` (required), `collect?` |
@@ -209,6 +209,9 @@ A string that is **exactly** one `{{token}}` resolves to the raw object (so
   JSON block.
 - `prefer` overrides routing; omit it to let routing pick by `role`/inferred task kind
   (and, with `learn=True`, demote providers the ledger shows failing).
+- `write_paths` should be set on any `sandbox:"write"` / `tools:["write"]` step.
+  After the agent returns, iworkflow compares Git dirty paths and fails the step if
+  the agent touched anything outside the declared repo-relative paths.
 - `required` defaults to `true`; if all preferred providers fail/exhaust, a sequential
   agent fails the workflow instead of feeding `null` into downstream prompts. Use
   `required:false` only for explicit best-effort/degraded steps.

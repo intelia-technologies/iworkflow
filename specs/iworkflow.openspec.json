@@ -160,6 +160,13 @@
           "type": "boolean",
           "description": "When true (default), an exhausted sequential agent fails the workflow instead of yielding null.",
           "default": true
+        },
+        "write_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed repo-relative write paths for write-capable agents. Dirty paths outside this list fail the step."
         }
       },
       "additionalProperties": false
@@ -502,6 +509,12 @@
             "required": {
               "type": "boolean",
               "default": true
+            },
+            "write_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           },
           "additionalProperties": false
@@ -686,6 +699,12 @@
             "required": {
               "type": "boolean",
               "default": true
+            },
+            "write_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           },
           "additionalProperties": false

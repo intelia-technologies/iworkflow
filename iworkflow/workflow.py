@@ -252,6 +252,7 @@ class AgentSpec:
     role: str | None = None
     sandbox: str = "read-only"
     tools: list[str] | None = None
+    write_paths: list[Any] = field(default_factory=list)
     gate: dict[str, Any] | None = None
     timeout_s: int | None = None
     heartbeat_interval_s: int | None = None
@@ -348,6 +349,7 @@ def _parse_agent(d: dict[str, Any], fallback_id: str, limits: Limits) -> AgentSp
         role=d.get("role"),
         sandbox=sandbox,
         tools=tools,
+        write_paths=d.get("write_paths") or [],
         gate=d.get("gate"),
         timeout_s=d.get("timeout_s"),
         heartbeat_interval_s=d.get("heartbeat_interval_s"),
@@ -716,6 +718,92 @@ class _Executor:
             heartbeat_interval_s=a.heartbeat_interval_s,
         )
 
+    def _write_guard_needed(self, a: AgentSpec) -> bool:
+        return a.sandbox != "read-only" or "write" in set(a.tools or [])
+
+    def _git_dirty_paths(self) -> set[str]:
+        import subprocess
+
+        root = Path(self.runner.default_cwd or os.getcwd())
+        if not root.exists():
+            return set()
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return set()
+        dirty: set[str] = set()
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            path = line[3:] if len(line) > 3 else line
+            if " -> " in path:
+                path = path.split(" -> ", 1)[1]
+            if path and not path.startswith(".iworkflow/"):
+                dirty.add(path)
+        return dirty
+
+    def _git_root(self) -> Path | None:
+        import subprocess
+
+        root = Path(self.runner.default_cwd or os.getcwd())
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        return Path(result.stdout.strip())
+
+    def _allowed_write_paths(self, a: AgentSpec, ctx: dict[str, Any]) -> list[str]:
+        workflow_root = Path(self.runner.default_cwd or os.getcwd())
+        git_root = self._git_root() or workflow_root
+        allowed: list[str] = []
+        for raw in a.write_paths:
+            rendered = render(raw, ctx)
+            if not isinstance(rendered, str) or not rendered:
+                continue
+            path = Path(rendered)
+            if not path.is_absolute():
+                path = workflow_root / path
+            try:
+                normalized = path.resolve().relative_to(git_root.resolve()).as_posix()
+            except ValueError:
+                normalized = path.as_posix()
+            allowed.append(normalized.rstrip("/"))
+        return allowed
+
+    @staticmethod
+    def _is_allowed_write(path: str, allowed: list[str]) -> bool:
+        normalized = path.rstrip("/")
+        for allow in allowed:
+            if normalized == allow or normalized.startswith(allow.rstrip("/") + "/"):
+                return True
+        return False
+
+    def _validate_write_paths(
+        self, a: AgentSpec, ctx: dict[str, Any], label: str, before_dirty: set[str]
+    ) -> None:
+        after_dirty = self._git_dirty_paths()
+        new_dirty = sorted(after_dirty - before_dirty)
+        if not new_dirty:
+            return
+        allowed = self._allowed_write_paths(a, ctx)
+        disallowed = [p for p in new_dirty if not self._is_allowed_write(p, allowed)]
+        if disallowed:
+            allowed_text = ", ".join(allowed) if allowed else "<none>"
+            raise WorkflowError(
+                f"agent step {label!r} wrote outside allowed paths: "
+                f"{', '.join(disallowed)} (allowed: {allowed_text})"
+            )
+
     @staticmethod
     def _result(res: AgentResult, **extra: Any) -> dict[str, Any]:
         return {"value": res.value, "provider": res.provider, "ok": res.ok, "timeout": res.timeout, "last_heartbeat": res.last_heartbeat, **extra}
@@ -736,7 +824,10 @@ class _Executor:
     async def _exec_agent(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
         a = step.agent
         assert a is not None
+        before_dirty = self._git_dirty_paths() if self._write_guard_needed(a) else set()
         res = await self._agent_call(a, ctx, label)
+        if res.ok and self._write_guard_needed(a):
+            self._validate_write_paths(a, ctx, label, before_dirty)
         out = self._result(res, kind="agent")
         if not res.ok and a.required:
             attempts = ", ".join(f"{x.provider}:{x.outcome}" for x in res.attempts)

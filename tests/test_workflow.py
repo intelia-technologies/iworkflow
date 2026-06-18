@@ -1,6 +1,7 @@
 """Declarative workflow engine — deterministic tests (no quota, FakeProvider/Scripted)."""
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -527,6 +528,11 @@ def test_brainstorm_recipe_avoids_claude_interactive_hangs():
         {"path": "openspec/changes/{{params.change_name}}/brainstorm.md", "type": "file"}
     ]
 
+    assert by_id["phase6_write_spec"]["write_paths"] == [
+        "openspec/changes/{{params.change_name}}/brainstorm.md"
+    ]
+    assert by_id["phase7_update_wiki"]["write_paths"] == ["thoughts/shared/wiki/"]
+
     for sid in ["phase6_write_spec", "phase7_update_wiki"]:
         step = by_id[sid]
         assert step["prefer"][:2] == ["codex", "gemini"]
@@ -654,6 +660,132 @@ def test_required_artifact_existing_allows_done(tmp_path):
     }
 
     out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+
+
+def test_write_agent_fails_when_touching_unallowed_path(tmp_path):
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "README.md").write_text("initial", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    class WrongWriter(Provider):
+        async def run(self, prompt, *, schema=None, sandbox="read-only", cwd=None, toolset=None, model=None):
+            root = Path(cwd or repo)
+            target = root / "docs" / "iworkflow-explainer.html"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("wrong", encoding="utf-8")
+            return "wrote wrong file"
+
+    runner = Runner(
+        "wrong-write",
+        {"codex": WrongWriter("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path / "journal"),
+        default_cwd=str(repo),
+    )
+    spec = {"steps": [{
+        "id": "write", "kind": "agent", "prefer": ["codex"],
+        "sandbox": "write", "tools": ["write"],
+        "write_paths": ["openspec/changes/x/brainstorm.md"],
+        "prompt": "write",
+    }]}
+
+    with pytest.raises(WorkflowError) as exc_info:
+        _run(run_spec(runner, spec, limits=Limits(allow_tools=True, allowed_sandboxes=frozenset({"read-only", "write"}))))
+
+    message = str(exc_info.value)
+    assert "wrote outside allowed paths" in message
+    assert "docs/iworkflow-explainer.html" in message
+    assert "openspec/changes/x/brainstorm.md" in message
+
+
+def test_write_agent_allows_declared_path(tmp_path):
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "README.md").write_text("initial", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    class CorrectWriter(Provider):
+        async def run(self, prompt, *, schema=None, sandbox="read-only", cwd=None, toolset=None, model=None):
+            root = Path(cwd or repo)
+            target = root / "openspec" / "changes" / "x" / "brainstorm.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("ok", encoding="utf-8")
+            return "wrote target"
+
+    runner = Runner(
+        "right-write",
+        {"codex": CorrectWriter("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path / "journal"),
+        default_cwd=str(repo),
+    )
+    spec = {"steps": [{
+        "id": "write", "kind": "agent", "prefer": ["codex"],
+        "sandbox": "write", "tools": ["write"],
+        "write_paths": ["openspec/changes/x/brainstorm.md"],
+        "prompt": "write",
+    }]}
+
+    out = _run(run_spec(runner, spec, limits=Limits(allow_tools=True, allowed_sandboxes=frozenset({"read-only", "write"}))))
+
+    assert out["status"] == "DONE"
+
+
+def test_write_paths_are_relative_to_workflow_cwd_inside_git_repo(tmp_path):
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    work = repo / "work"
+    work.mkdir()
+    (work / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "work/.gitkeep"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+
+    class SubdirWriter(Provider):
+        async def run(self, prompt, *, schema=None, sandbox="read-only", cwd=None, toolset=None, model=None):
+            root = Path(cwd or work)
+            target = root / "openspec" / "changes" / "x" / "brainstorm.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("ok", encoding="utf-8")
+            return "wrote target"
+
+    runner = Runner(
+        "subdir-write",
+        {"codex": SubdirWriter("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path / "journal"),
+        default_cwd=str(work),
+    )
+    spec = {"steps": [{
+        "id": "write", "kind": "agent", "prefer": ["codex"],
+        "sandbox": "write", "tools": ["write"],
+        "write_paths": ["openspec/changes/x/brainstorm.md"],
+        "prompt": "write",
+    }]}
+
+    out = _run(run_spec(
+        runner, spec,
+        limits=Limits(allow_tools=True, allowed_sandboxes=frozenset({"read-only", "write"})),
+    ))
 
     assert out["status"] == "DONE"
 

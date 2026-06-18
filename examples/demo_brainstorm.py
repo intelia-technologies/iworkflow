@@ -107,7 +107,7 @@ class DemoBrainstormProvider(Provider):
                 "next_action": "Write brainstorm.md for PostgreSQL architecture",
             }
 
-        if "Write the final brainstorm" in prompt:
+        if "openspec/changes" in prompt and "brainstorm.md" in prompt:
             print("[SIMULATOR] Phase 6: Writing brainstorm specification document...")
             if cwd:
                 artifact = Path(cwd) / "openspec/changes/feature-x/brainstorm.md"
@@ -115,7 +115,7 @@ class DemoBrainstormProvider(Provider):
                 artifact.write_text("# Brainstorm: feature-x\n", encoding="utf-8")
             return "Successfully generated brainstorm.md in new branch."
 
-        if "Update the wiki" in prompt:
+        if "thoughts/shared/wiki" in prompt:
             print("[SIMULATOR] Phase 7: Updating thoughts/shared/wiki/...")
             return "Wiki updated with architectural decision: PostgreSQL adopted."
 
