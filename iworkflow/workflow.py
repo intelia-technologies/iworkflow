@@ -648,27 +648,54 @@ class _Executor:
         status, aborted_at = "DONE", None
         try:
             i = 0
-            while i < len(self.plan):                      # plan may grow/shrink via supervisor
-                step = self.plan[i]
-                if step.id in self._completed:            # journaled on a prior run
-                    result = self._completed[step.id]
-                    self.ctx["steps"][step.id] = result
-                    if step.kind == "supervisor":
-                        # replay the supervisor's recorded decision so the resumed plan
-                        # is re-mutated identically — WITHOUT calling the agent again.
+            while i < len(self.plan):
+                batch = []
+                while i < len(self.plan) and self.plan[i].kind != "supervisor":
+                    batch.append(self.plan[i])
+                    i += 1
+                
+                if batch:
+                    tasks = {}
+                    async def run_step_with_deps(step: Step):
+                        for dep in step.needs:
+                            if dep in tasks:
+                                await tasks[dep]
+                        
+                        if step.id in self._completed:
+                            result = self._completed[step.id]
+                            self.ctx["steps"][step.id] = result
+                            log(f"RESUMED step {step.id} (journaled, 0 agents)")
+                            return
+                        
+                        result = await self._exec_step(step, self.ctx, step.id)
+                        self.ctx["steps"][step.id] = result
+                        self._completed[step.id] = result
+                        self._persist_steps()
+
+                    for step in batch:
+                        tasks[step.id] = asyncio.create_task(run_step_with_deps(step))
+                    
+                    done, pending = await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_EXCEPTION)
+                    if pending:
+                        for t in pending:
+                            t.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                    
+                    for t in done:
+                        t.result()
+                
+                if i < len(self.plan) and self.plan[i].kind == "supervisor":
+                    step = self.plan[i]
+                    if step.id in self._completed:
+                        result = self._completed[step.id]
+                        self.ctx["steps"][step.id] = result
                         self._apply_supervision(result.get("value") or {}, i, replay=True)
                     else:
-                        log(f"RESUMED step {step.id} (journaled, 0 agents)")
+                        result = await self._exec_supervisor(step, i)
+                        self.ctx["steps"][step.id] = result
+                        self._completed[step.id] = result
+                        self._persist_steps()
                     i += 1
-                    continue
-                if step.kind == "supervisor":
-                    result = await self._exec_supervisor(step, i)
-                else:
-                    result = await self._exec_step(step, self.ctx, step.id)
-                self.ctx["steps"][step.id] = result
-                self._completed[step.id] = result
-                self._persist_steps()
-                i += 1
         except _Abort as a:
             status, aborted_at = "ABORTED", a.step_id
         out = render(self.wf.output, self.ctx) if self.wf.output is not None else None
