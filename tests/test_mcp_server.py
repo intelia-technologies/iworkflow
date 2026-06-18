@@ -411,15 +411,24 @@ def test_dashboard_server_api_endpoints(tmp_path):
     import urllib.request
     import threading
     import time
-    from iworkflow.dashboard import ThreadingHTTPServer, DashboardHandler
+    from iworkflow.dashboard import HTML_DASHBOARD, ThreadingHTTPServer, DashboardHandler
 
     run_id = "test-dash-run"
     run_dir = tmp_path / "runs" / run_id
     run_dir.mkdir(parents=True)
 
-    (run_dir / "spec.json").write_text(json.dumps({"name": "test_wf", "steps": []}), encoding="utf-8")
+    spec_payload = {
+        "name": "test_wf",
+        "steps": [{"id": "a", "kind": "command", "command": "echo ok"}],
+    }
+    (run_dir / "spec.json").write_text(json.dumps(spec_payload), encoding="utf-8")
     (run_dir / "events.jsonl").write_text(json.dumps({"event": "route", "label": "a", "ts": 12345}) + "\n", encoding="utf-8")
     (run_dir / "wf-steps.json").write_text(json.dumps({"a": "value_a"}), encoding="utf-8")
+
+    assert '<script type="module">' in HTML_DASHBOARD
+    assert "click ${s.id} call selectStep()" in HTML_DASHBOARD
+    assert "click ${s.id} call selectStep;" not in HTML_DASHBOARD
+    assert "class ${s.id} ${state};" not in HTML_DASHBOARD
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("localhost", 0))
@@ -448,6 +457,10 @@ def test_dashboard_server_api_endpoints(tmp_path):
 
         spec = json.loads(urllib.request.urlopen(f"{base_url}/api/spec").read().decode("utf-8"))
         assert spec["name"] == "test_wf"
+
+        mermaid = urllib.request.urlopen(f"{base_url}/api/mermaid").read().decode("utf-8")
+        assert 'a["a (command)"]' in mermaid
+        assert "unknown: command" not in mermaid
 
         events = urllib.request.urlopen(f"{base_url}/api/events").read().decode("utf-8")
         assert "route" in events

@@ -134,7 +134,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     </aside>
   </div>
 
-  <script>
+  <script type="module">
     let activeTab = 'prompt';
     let selectedStepId = null;
     let baseMermaid = '';
@@ -323,9 +323,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       function applyClasses(steps) {
         steps.forEach(s => {
           const state = stepStates[s.id] || 'pending';
-          code += `\\nclass ${s.id} ${state};`;
+          code += `\\nclass ${s.id} ${state}`;
           // Also set click event
-          code += `\\nclick ${s.id} call selectStep;`;
+          code += `\\nclick ${s.id} call selectStep()`;
           if (s.body) applyClasses(s.body);
         });
       }
