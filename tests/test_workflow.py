@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from iworkflow import (
-    FakeProvider, Limits, Provider, Runner, WorkflowLimitError,
+    AgentResult, FakeProvider, Limits, Provider, Runner, WorkflowLimitError,
     get_recipe, list_recipes, run_spec,
 )
 from iworkflow.workflow import WorkflowError, WorkflowSpec, render
@@ -504,6 +504,66 @@ def test_resume_journals_completed_steps(tmp_path):
     out2 = _run(run_spec(r2, spec))
     assert p2._n == 0                                            # both steps journaled → 0 agents
     assert out2["steps"]["sum"] == out1["steps"]["sum"]
+
+
+def test_brainstorm_recipe_avoids_claude_interactive_hangs():
+    spec = get_recipe("brainstorm")
+    by_id = {step["id"]: step for step in spec["steps"]}
+
+    for sid in ["phase2_clarification", "phase4_proposals", "phase8_handoff"]:
+        step = by_id[sid]
+        assert step["prefer"][:2] == ["gemini", "codex"]
+        assert step["timeout_s"] <= 60
+        assert step["heartbeat_interval_s"] <= 15
+
+    for sid in ["phase6_write_spec", "phase7_update_wiki"]:
+        step = by_id[sid]
+        assert step["prefer"][:2] == ["codex", "gemini"]
+        assert step["timeout_s"] <= 90
+        assert step["heartbeat_interval_s"] <= 15
+
+    decider = by_id["phase5_dialogue_loop"]["until"]["agent"]
+    assert decider["prefer"][:2] == ["gemini", "codex"]
+    assert decider["timeout_s"] <= 60
+    assert decider["heartbeat_interval_s"] <= 15
+
+    chat = by_id["phase5_dialogue_loop"]["body"][0]
+    assert chat["prefer"][:2] == ["gemini", "codex"]
+    assert chat["timeout_s"] <= 60
+    assert chat["heartbeat_interval_s"] <= 15
+
+
+def test_loop_decider_propagates_timeout_and_heartbeat(tmp_path):
+    runner, _ = _fake_runner(tmp_path)
+    original_agent = runner.agent
+    seen = {}
+
+    async def recording_agent(prompt, *, label, schema=None, prefer=None, model=None, models=None,
+                              role=None, sandbox="read-only", tools=None, auto_tools=None,
+                              timeout_s=None, heartbeat_interval_s=None):
+        if "#decide" in label:
+            seen["timeout_s"] = timeout_s
+            seen["heartbeat_interval_s"] = heartbeat_interval_s
+            return AgentResult(label, "DONE", "codex", {"verdict": "STOP"})
+        return await original_agent(
+            prompt, label=label, schema=schema, prefer=prefer, model=model, models=models,
+            role=role, sandbox=sandbox, tools=tools, auto_tools=auto_tools,
+            timeout_s=timeout_s, heartbeat_interval_s=heartbeat_interval_s,
+        )
+
+    runner.agent = recording_agent
+    spec = {"steps": [{
+        "id": "L", "kind": "loop", "max_iterations": 2,
+        "until": {"agent": {
+            "prompt": "done?", "stop_when": "STOP", "prefer": ["codex"],
+            "timeout_s": 17, "heartbeat_interval_s": 5,
+        }},
+        "body": [{"id": "work", "kind": "agent", "prefer": ["codex"], "prompt": "work"}],
+    }]}
+
+    out = _run(run_spec(runner, spec))
+    assert out["status"] == "DONE"
+    assert seen == {"timeout_s": 17, "heartbeat_interval_s": 5}
 
 
 def test_preflight_checks_uncommitted_changes(tmp_path):

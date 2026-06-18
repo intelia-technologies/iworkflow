@@ -367,8 +367,10 @@ BRAINSTORM: dict[str, Any] = {
         {
             "id": "phase2_clarification",
             "kind": "agent",
-            "prefer": ["claude", "gemini", "codex"],
+            "prefer": ["gemini", "codex", "claude"],
             "role": "architect",
+            "timeout_s": 60,
+            "heartbeat_interval_s": 15,
             "schema": {
                 "type": "object", "required": ["questions"],
                 "properties": {"questions": {"type": "array", "items": {"type": "string"}}}
@@ -398,11 +400,11 @@ BRAINSTORM: dict[str, Any] = {
         {
                     "id": "phase4_proposals",
                     "kind": "agent",
-                    "prefer": ["claude"],
-                    "model": "opus",
+                    "prefer": ["gemini", "codex", "claude"],
                     "role": "solution_designer",
                     "schema": "proposal",
-                    "timeout_s": 300,
+                    "timeout_s": 60,
+                    "heartbeat_interval_s": 15,
                     "prompt": "Using context from {{steps.phase3_context.value}}, propose 2-3 technical approaches for {{params.change_name}}. Include honest pros/contras for each."
                 },
         {
@@ -413,15 +415,19 @@ BRAINSTORM: dict[str, Any] = {
                 "agent": {
                     "prompt": "Review the dialogue: {{loop.collected}}. Is the scope locked and all forks resolved? Return STOP or CONTINUE.",
                     "stop_when": "STOP",
-                    "prefer": ["claude", "gemini", "codex"]
+                    "prefer": ["gemini", "codex", "claude"],
+                    "timeout_s": 60,
+                    "heartbeat_interval_s": 15
                 }
             },
             "body": [
                 {
                     "id": "chat",
                     "kind": "agent",
-                    "prefer": ["claude", "gemini", "codex"],
+                    "prefer": ["gemini", "codex", "claude"],
                     "models": {"claude": "sonnet-3.5"},
+                    "timeout_s": 60,
+                    "heartbeat_interval_s": 15,
                     "prompt": "Current status: {{loop.collected}}. User says: {{params.user_input}}. Refine the direction until scope is locked."
                 }
             ]
@@ -429,8 +435,10 @@ BRAINSTORM: dict[str, Any] = {
         {
             "id": "phase6_write_spec",
             "kind": "agent",
-            "prefer": ["claude", "codex", "gemini"],
+            "prefer": ["codex", "gemini", "claude"],
             "model": "sonnet",
+            "timeout_s": 90,
+            "heartbeat_interval_s": 15,
             "tools": ["write"],
             "sandbox": "write",
             "instructions": { "gh": "gh pr create --title 'Brainstorm: {{params.change_name}}' --body 'Generated via iworkflow'" },
@@ -439,8 +447,10 @@ BRAINSTORM: dict[str, Any] = {
         {
             "id": "phase7_update_wiki",
             "kind": "agent",
-            "prefer": ["claude", "codex", "gemini"],
+            "prefer": ["codex", "gemini", "claude"],
             "model": "sonnet",
+            "timeout_s": 90,
+            "heartbeat_interval_s": 15,
             "tools": ["write"],
             "sandbox": "write",
             "prompt": "Update the wiki in 'thoughts/shared/wiki/' with the new domain knowledge from this brainstorm."
@@ -448,7 +458,9 @@ BRAINSTORM: dict[str, Any] = {
         {
             "id": "phase8_handoff",
             "kind": "agent",
-            "prefer": ["claude", "gemini", "codex"],
+            "prefer": ["gemini", "codex", "claude"],
+            "timeout_s": 60,
+            "heartbeat_interval_s": 15,
             "prompt": "Confirm files created. Suggest next step: /workflows:plan {{params.change_name}}"
         },
         {
@@ -456,7 +468,9 @@ BRAINSTORM: dict[str, Any] = {
             "kind": "supervisor",
             "needs": ["phase5_dialogue_loop"],
             "watch": ["phase5_dialogue_loop"],
-            "prefer": ["claude", "gemini", "codex"],
+            "prefer": ["gemini", "codex", "claude"],
+            "timeout_s": 60,
+            "heartbeat_interval_s": 15,
             "when": {"path": "steps.phase5_dialogue_loop", "select": "stop_reason", "eq": "max_iterations"},
             "prompt": "The dialogue loop reached max iterations without locking the scope. Should we inject a manual triage step or continue as-is?"
         }

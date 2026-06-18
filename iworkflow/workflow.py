@@ -882,7 +882,9 @@ class _Executor:
             res = await self._agent_call(
                 AgentSpec(id="decide", prompt=p["prompt"], schema=schema,
                           prefer=p.get("prefer"), model=p.get("model"),
-                          models=p.get("models"), role=p.get("role")),
+                          models=p.get("models"), role=p.get("role"),
+                          timeout_s=p.get("timeout_s"),
+                          heartbeat_interval_s=p.get("heartbeat_interval_s")),
                 loop_ctx, f"{label}#decide{iteration}")
             verdict = res.value.get(field_name) if isinstance(res.value, dict) else None
             return res.value, (res.ok and verdict in stop_set)
@@ -898,7 +900,8 @@ class _Executor:
             return lambda: self._agent_call(
                 AgentSpec(id=f"vote{i}", prompt=prompt + lens, schema=schema,
                           prefer=p.get("prefer"), model=p.get("model"),
-                          models=p.get("models")),
+                          models=p.get("models"), timeout_s=p.get("timeout_s"),
+                          heartbeat_interval_s=p.get("heartbeat_interval_s")),
                 loop_ctx, f"{label}#vote{iteration}.{i}")
 
         results = await self.runner.parallel([voter(i) for i in range(count)])

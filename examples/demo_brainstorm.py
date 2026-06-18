@@ -48,11 +48,8 @@ class DemoBrainstormProvider(Provider):
     ) -> Any:
         self.last_usage = {"input_tokens": 12, "output_tokens": 24, "cost_usd": None}
 
-        # Simulate answers based on keywords in prompts
-        if "existing brainstorms" in prompt:
-            print("[SIMULATOR] Phase 1: Searching existing brainstorms...")
-            return "No existing brainstorms found in openspec/changes/."
-
+        # Simulate answers based on keywords in prompts. More specific phases must
+        # come first because later prompts embed prior phase text verbatim.
         if "targeted clarification questions" in prompt:
             print("[SIMULATOR] Phase 2: Generating clarification questions...")
             return {
@@ -61,6 +58,10 @@ class DemoBrainstormProvider(Provider):
                     "2. ¿Cuál es la escala de concurrencia esperada para el MVP?"
                 ]
             }
+
+        if "existing brainstorms" in prompt:
+            print("[SIMULATOR] Phase 1: Searching existing brainstorms...")
+            return "No existing brainstorms found in openspec/changes/."
 
         if "Analyze existing code" in prompt:
             print("[SIMULATOR] Phase 3: Inspecting code context...")
@@ -159,7 +160,8 @@ async def main() -> None:
                 "change_name": "feature-x",
                 "user_input": "Prefiero la opción B (PostgreSQL) para asegurar el escalado."
             },
-            limits=Limits(allow_tools=True, allowed_sandboxes=["read-only", "write"])
+            limits=Limits(allow_tools=True, allowed_sandboxes=["read-only", "write"]),
+            preflight_checked=not args.live,
         )
         print("\nWorkflow Run Finished Successfully!")
         print("Final Output Bundle:")
