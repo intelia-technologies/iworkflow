@@ -279,13 +279,13 @@ class ClaudeProvider(Provider):
             if allowed:
                 argv += ["--allowedTools", *allowed]
             if schema:
-                fd, schema_file = tempfile.mkstemp(suffix=".schema.json")
-                os.write(fd, json.dumps(schema).encode())
-                os.close(fd)
-                argv += ["--json-schema", schema_file]
+                argv += ["--json-schema", json.dumps(schema)]
             code, stdout, stderr = await self._exec(argv, full_prompt, cwd=cwd)
             self._classify(code, stdout + "\n" + stderr)
-            envelope = json.loads(stdout)            # claude -p --output-format json envelope
+            try:
+                envelope = json.loads(stdout)            # claude -p --output-format json envelope
+            except json.JSONDecodeError as e:
+                raise ProviderError(f"Failed to parse Claude JSON output: {e}\nstdout: {stdout!r}\nstderr: {stderr!r}")
             usage = envelope.get("usage") if isinstance(envelope, dict) else None
             if isinstance(usage, dict):
                 self.last_usage = {"input_tokens": usage.get("input_tokens"),
@@ -293,7 +293,10 @@ class ClaudeProvider(Provider):
                                    "cost_usd": envelope.get("total_cost_usd")}
             result = envelope.get("result", envelope)
             if schema:
-                payload = result if isinstance(result, dict) else json.loads(result)
+                structured = envelope.get("structured_output") if isinstance(envelope, dict) else None
+                payload = structured if structured is not None else (
+                    result if isinstance(result, dict) else json.loads(result)
+                )
                 ok, why = validate(payload, schema)
                 if not ok:
                     raise ProviderError(f"schema mismatch: {why}")

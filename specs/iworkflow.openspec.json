@@ -1,0 +1,390 @@
+{
+  "openSpecVersion": "1.0.0-draft",
+  "info": {
+    "name": "iworkflow",
+    "summary": "Deterministic multi-agent workflow orchestrator (CLI, MCP, Python SDK).",
+    "version": "0.1.1",
+    "description": "Reference contract for iworkflow. Workflows are pure data specs executed by a deterministic Python runner; workers are subscription CLIs (codex, gemini, claude). The same spec can be produced by an LLM planner and executed via CLI/MCP/SDK."
+  },
+  "types": {
+    "JsonSchema": {
+      "type": "object",
+      "description": "JSON Schema draft-07+ object. Used inline or by name.",
+      "additionalProperties": true
+    },
+    "Limits": {
+      "type": "object",
+      "description": "Safety policy (optional; omit to use engine defaults).",
+      "properties": {
+        "allowed_sandboxes": { "type": "array", "items": { "type": "string" } },
+        "allow_tools": { "type": "boolean" },
+        "max_total_agent_calls": { "type": "integer", "minimum": 1 },
+        "max_parallel_width": { "type": "integer", "minimum": 1 },
+        "max_pipeline_items": { "type": "integer", "minimum": 1 },
+        "max_loop_depth": { "type": "integer", "minimum": 1 },
+        "max_loop_iterations": { "type": "integer", "minimum": 1 },
+        "max_supervisions": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "AgentSpec": {
+      "type": "object",
+      "required": ["id", "prompt"],
+      "properties": {
+        "id": { "type": "string", "description": "Agent id (unique in its scope)." },
+        "prompt": { "type": "string", "description": "Template rendered against the run context." },
+        "schema": {
+          "description": "Output schema: name or inline JSON Schema.",
+          "oneOf": [
+            { "type": "string" },
+            { "$ref": "#/types/JsonSchema" }
+          ]
+        },
+        "prefer": { "type": "array", "items": { "type": "string" }, "description": "Provider preference order." },
+        "role": { "type": "string", "description": "Optional role hint for routing." },
+        "model": { "type": "string", "description": "Provider/model override." },
+        "sandbox": { "type": "string", "description": "Sandbox name (default read-only)." },
+        "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool allowlist (honored only if policy allow_tools=true)." },
+        "gate": {
+          "type": "object",
+          "description": "Abort guard evaluated on the agent result.",
+          "properties": {
+            "field": { "type": "string" },
+            "abort_on": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" } }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "instructions": {
+          "type": "object",
+          "description": "Planner hints for sub-agents (worktree/branch/gh). Not enforced by the engine.",
+          "properties": {
+            "run_in_worktree": { "type": "string", "description": "\"current\" or worktree name." },
+            "branch": { "type": "string", "description": "\"reuse\", \"none\", or \"new:<name>\"." },
+            "gh": { "type": "string", "description": "GitHub CLI guidance, e.g., gh pr create …" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "Until": {
+      "type": "object",
+      "description": "Loop stop condition (exactly one key).",
+      "oneOf": [
+        { "properties": { "times": { "type": "integer", "minimum": 0 } }, "required": ["times"], "additionalProperties": false },
+        { "properties": { "count": { "type": "object", "properties": { "target": { "type": "integer", "minimum": 0 } }, "required": ["target"], "additionalProperties": false } }, "required": ["count"], "additionalProperties": false },
+        { "properties": { "dry": { "type": "object", "properties": { "rounds": { "type": "integer", "minimum": 1 } }, "required": ["rounds"], "additionalProperties": false } }, "required": ["dry"], "additionalProperties": false },
+        { "properties": { "budget": { "type": "object", "properties": { "output_tokens": { "type": "integer", "minimum": 0 } }, "required": ["output_tokens"], "additionalProperties": false } }, "required": ["budget"], "additionalProperties": false },
+        { "properties": { "agent": { "type": "object", "properties": { "prompt": { "type": "string" }, "stop_when": { "oneOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] }, "schema": { "oneOf": [ { "type": "string" }, { "$ref": "#/types/JsonSchema" } ] }, "field": { "type": "string" }, "prefer": { "type": "array", "items": { "type": "string" } }, "model": { "type": "string" }, "role": { "type": "string" }, "lenses": { "type": "array", "items": { "type": "string" } } }, "required": ["prompt"], "additionalProperties": true } }, "required": ["agent"], "additionalProperties": false },
+        { "properties": { "vote": { "type": "object", "properties": { "prompt": { "type": "string" }, "count": { "type": "integer", "minimum": 1 }, "threshold": { "type": "integer", "minimum": 1 }, "lenses": { "type": "array", "items": { "type": "string" } }, "schema": { "oneOf": [ { "type": "string" }, { "$ref": "#/types/JsonSchema" } ] }, "field": { "type": "string" }, "stop_when": { "oneOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] }, "prefer": { "type": "array", "items": { "type": "string" } }, "model": { "type": "string" }, "role": { "type": "string" } }, "required": ["prompt"], "additionalProperties": true } }, "required": ["vote"], "additionalProperties": false }
+      ]
+    },
+    "Collect": {
+      "type": "object",
+      "properties": {
+        "from": { "type": "string" },
+        "path": { "type": "string" },
+        "where": { "type": "string" },
+        "dedup_by": { "type": "string" }
+      },
+      "required": ["from"],
+      "additionalProperties": false
+    },
+    "When": {
+      "type": "object",
+      "description": "Declarative guard; leaves are path/op predicates combined via all/any/not.",
+      "additionalProperties": true
+    },
+    "Step": {
+      "oneOf": [
+        {
+          "title": "agent",
+          "type": "object",
+          "required": ["id", "kind", "prompt"],
+          "properties": {
+            "id": { "type": "string" },
+            "kind": { "const": "agent" },
+            "needs": { "type": "array", "items": { "type": "string" } },
+            "agent": { "$ref": "#/types/AgentSpec" },
+            "schema": { "oneOf": [ { "type": "string" }, { "$ref": "#/types/JsonSchema" } ] },
+            "prompt": { "type": "string" },
+            "prefer": { "type": "array", "items": { "type": "string" } },
+            "role": { "type": "string" },
+            "model": { "type": "string" },
+            "sandbox": { "type": "string" },
+            "tools": { "type": "array", "items": { "type": "string" } },
+            "gate": { "$ref": "#/types/AgentSpec/properties/gate" },
+            "instructions": { "$ref": "#/types/AgentSpec/properties/instructions" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "parallel",
+          "type": "object",
+          "required": ["id", "kind", "agents"],
+          "properties": {
+            "id": { "type": "string" },
+            "kind": { "const": "parallel" },
+            "needs": { "type": "array", "items": { "type": "string" } },
+            "agents": { "type": "array", "items": { "$ref": "#/types/AgentSpec" }, "minItems": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "pipeline",
+          "type": "object",
+          "required": ["id", "kind", "items", "stages"],
+          "properties": {
+            "id": { "type": "string" },
+            "kind": { "const": "pipeline" },
+            "needs": { "type": "array", "items": { "type": "string" } },
+            "items": {
+              "oneOf": [
+                { "type": "array" },
+                { "type": "string" }
+              ]
+            },
+            "stages": { "type": "array", "items": { "$ref": "#/types/AgentSpec" }, "minItems": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "loop",
+          "type": "object",
+          "required": ["id", "kind", "body", "until", "max_iterations"],
+          "properties": {
+            "id": { "type": "string" },
+            "kind": { "const": "loop" },
+            "needs": { "type": "array", "items": { "type": "string" } },
+            "body": { "type": "array", "items": { "$ref": "#/types/Step" }, "minItems": 1 },
+            "until": { "$ref": "#/types/Until" },
+            "max_iterations": { "type": "integer", "minimum": 1 },
+            "collect": { "$ref": "#/types/Collect" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "supervisor",
+          "type": "object",
+          "required": ["id", "kind", "supervisor"],
+          "properties": {
+            "id": { "type": "string" },
+            "kind": { "const": "supervisor" },
+            "needs": { "type": "array", "items": { "type": "string" } },
+            "watch": { "type": "array", "items": { "type": "string" } },
+            "when": { "$ref": "#/types/When" },
+            "supervisor": { "$ref": "#/types/AgentSpec" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "WorkflowSpec": {
+      "type": "object",
+      "required": ["steps"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "params": { "type": "object", "additionalProperties": true },
+        "schemas": { "type": "object", "additionalProperties": { "$ref": "#/types/JsonSchema" } },
+        "output": { "oneOf": [ { "type": "string" }, { "type": "object", "additionalProperties": true } ] },
+        "steps": { "type": "array", "items": { "$ref": "#/types/Step" }, "minItems": 1 },
+        "execution": {
+          "type": "object",
+          "description": "Planner hints for git/worktree/gh (not enforced by the engine).",
+          "properties": {
+            "worktree": { "type": "string", "description": "\"current\", \"new:<name>\", or \"existing:<name>\"." },
+            "branch": { "type": "string", "description": "\"reuse\", \"none\", or \"new:<name>\"." },
+            "checkout": { "type": "boolean", "default": true },
+            "gh_required": { "type": "boolean", "default": false }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowRunBundle": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["DONE", "ABORTED", "ERROR"] },
+        "name": { "type": ["string", "null"] },
+        "output": { "nullable": true },
+        "steps": { "type": "object", "additionalProperties": true },
+        "aborted_at": { "type": ["string", "null"] },
+        "run_id": { "type": ["string", "null"] }
+      },
+      "required": ["status", "steps"],
+      "additionalProperties": true
+    }
+  },
+  "actions": {
+    "workflows.list": {
+      "summary": "List available workflows/recipes.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "recipe_dir": { "type": "string", "description": "Host recipe dir (default .iworkflow/recipes)." }
+        },
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "workflows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "params": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        },
+        "required": ["workflows"],
+        "additionalProperties": false
+      }
+    },
+    "workflows.run": {
+      "summary": "Run a workflow synchronously (CLI/MCP/SDK).",
+      "input": {
+        "type": "object",
+        "properties": {
+          "workflow": { "type": "string", "description": "Recipe name to run." },
+          "spec": { "$ref": "#/types/WorkflowSpec", "description": "Inline dynamic workflow spec." },
+          "goal": { "type": "string", "description": "Shortcut to fan_synthesize recipe." },
+          "params": { "type": "object", "additionalProperties": true },
+          "limits": { "$ref": "#/types/Limits" },
+          "caps": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 1 }, "description": "Per-provider concurrency caps." },
+          "run_id": { "type": "string" },
+          "journal_dir": { "type": "string" },
+          "recipe_dir": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "output": { "$ref": "#/types/WorkflowRunBundle" }
+    },
+    "workflows.start": {
+      "summary": "Start a workflow asynchronously (non-blocking).",
+      "input": { "$ref": "#/actions/workflows.run/input" },
+      "output": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "status": { "type": "string", "enum": ["started", "unknown_done"] }
+        },
+        "required": ["run_id", "status"],
+        "additionalProperties": false
+      }
+    },
+    "workflows.stream": {
+      "summary": "Stream workflow events (long-poll style).",
+      "input": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "after": { "type": "integer", "default": 0 },
+          "block_s": { "type": "number", "default": 5 }
+        },
+        "required": ["run_id"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "status": { "type": "string" },
+          "events": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "next_after": { "type": "integer" }
+        },
+        "required": ["run_id", "status", "events", "next_after"],
+        "additionalProperties": false
+      }
+    },
+    "workflows.poll": {
+      "summary": "Poll a workflow snapshot.",
+      "input": {
+        "type": "object",
+        "properties": { "run_id": { "type": "string" } },
+        "required": ["run_id"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "status": { "type": "string" },
+          "bundle": { "$ref": "#/types/WorkflowRunBundle" }
+        },
+        "required": ["run_id", "status"],
+        "additionalProperties": true
+      }
+    },
+    "graph.generate": {
+      "summary": "Generate a workflow diagram (Mermaid/HTML/publish).",
+      "input": {
+        "type": "object",
+        "properties": {
+          "workflow": { "type": "string" },
+          "spec": { "$ref": "#/types/WorkflowSpec" },
+          "html_path": { "type": "string" },
+          "publish": { "type": "boolean", "default": false },
+          "mermaid": { "type": "boolean", "default": false }
+        },
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "html_path": { "type": "string" },
+          "publish_url": { "type": "string" },
+          "mermaid": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "examples": {
+    "recipe.complex_security_audit": {
+      "summary": "Multi-stage security audit (gate → parallel threat modeling → pipeline scans → looped remediation → supervisor).",
+      "workflow": "complex_security_audit",
+      "params": {
+        "modules": ["auth-service", "billing-core", "gateway-api"],
+        "codebase_description": "Payments + OAuth backend"
+      }
+    },
+    "dynamic.loop.decider": {
+      "summary": "Loop until a decider says STOP, collecting findings.",
+      "spec": {
+        "name": "loop_decider_demo",
+        "params": { "subject": "payments service" },
+        "steps": [
+          {
+            "id": "sweep",
+            "kind": "loop",
+            "max_iterations": 3,
+            "until": { "agent": { "prompt": "Found {{loop.collected}}. STOP when done.", "stop_when": "STOP", "prefer": ["gemini"] } },
+            "collect": { "from": "find", "path": "findings", "dedup_by": "title" },
+            "body": [
+              {
+                "id": "find",
+                "kind": "agent",
+                "schema": { "type": "object", "required": ["findings"], "properties": { "findings": { "type": "array" } } },
+                "prompt": "Find NEW issues in {{params.subject}} not in {{loop.collected}}; focus on {{loop.decision.missing}}.",
+                "prefer": ["codex", "gemini"]
+              }
+            ]
+          }
+        ],
+        "output": "{{steps.sweep.value}}"
+      }
+    }
+  }
+}

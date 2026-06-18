@@ -271,9 +271,14 @@ def test_parse_errors():
 # --- recipe registry ------------------------------------------------------
 def test_builtin_recipes_listed():
     names = {r["name"] for r in list_recipes()}
-    assert {"fan_synthesize", "review", "roadmap", "deep_review"} <= names
+    assert {"fan_synthesize", "review", "roadmap", "deep_review", "complex_security_audit"} <= names
 
 
+def test_complex_security_audit_recipe_parses():
+    spec = get_recipe("complex_security_audit")
+    parsed = WorkflowSpec.parse(spec)
+    assert parsed.name == "complex_security_audit"
+    assert len(parsed.steps) == 5
 def test_get_unknown_recipe_raises():
     with pytest.raises(KeyError):
         get_recipe("nope")

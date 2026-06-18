@@ -48,6 +48,53 @@ PROPOSAL_SCHEMA: dict[str, Any] = {
                        "effort": {"type": "string", "enum": ["S", "M", "L"]}}}}},
 }
 
+THREAT_MODEL_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False, "required": ["threats"],
+    "properties": {
+        "threats": {
+            "type": "array",
+            "items": {
+                "type": "object", "additionalProperties": False,
+                "required": ["title", "severity", "description"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
+                    "description": {"type": "string"}
+                }
+            }
+        }
+    }
+}
+
+SECURITY_FINDINGS_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False, "required": ["findings"],
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object", "additionalProperties": False,
+                "required": ["file", "vulnerability", "risk_rating"],
+                "properties": {
+                    "file": {"type": "string"},
+                    "vulnerability": {"type": "string"},
+                    "risk_rating": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]}
+                }
+            }
+        }
+    }
+}
+
+PATCH_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["patched_file", "success", "regressions_found"],
+    "properties": {
+        "patched_file": {"type": "string"},
+        "success": {"type": "boolean"},
+        "regressions_found": {"type": "boolean"},
+        "regression_details": {"type": "string"}
+    }
+}
+
 
 # --- built-in recipes (specs) --------------------------------------------
 FAN_SYNTHESIZE: dict[str, Any] = {
@@ -179,9 +226,120 @@ ADAPTIVE_REVIEW: dict[str, Any] = {
                "supervision": "{{steps.supervise.value}}", "audit": "{{steps.audit.value}}"},
 }
 
+COMPLEX_SECURITY_AUDIT: dict[str, Any] = {
+    "name": "complex_security_audit",
+    "description": "Multi-stage automated security audit workflow: scopes/gates input, models threats in parallel, scans modules via a pipeline, loops to generate and validate fixes, and uses a supervisor to dynamically adjust final review actions.",
+    "params": {
+        "modules": ["auth-service", "billing-core", "gateway-api"],
+        "codebase_description": "Microservice architecture handling payments and OAuth2 auth flows."
+    },
+    "schemas": {
+        "gate": GATE_SCHEMA,
+        "threat_model": THREAT_MODEL_SCHEMA,
+        "findings": SECURITY_FINDINGS_SCHEMA,
+        "patch_result": PATCH_RESULT_SCHEMA,
+        "decision": DECISION_SCHEMA
+    },
+    "steps": [
+        {
+            "id": "scope_check",
+            "kind": "agent",
+            "schema": "gate",
+            "prefer": ["claude"],
+            "gate": {"field": "verdict", "abort_on": "BLOCKED"},
+            "prompt": "Verify if the scope is well-defined. Modules to scan: {{params.modules}}. Context: {{params.codebase_description}}. verdict=READY to proceed, BLOCKED if parameters are empty or invalid."
+        },
+        {
+            "id": "threat_modeling",
+            "kind": "parallel",
+            "needs": ["scope_check"],
+            "agents": [
+                {
+                    "id": "data_flow",
+                    "prefer": ["gemini"],
+                    "schema": "threat_model",
+                    "prompt": "Analyze data flow boundaries and trust zones for: {{params.codebase_description}}. Propose threats with severity ratings."
+                },
+                {
+                    "id": "abuse_cases",
+                    "prefer": ["codex"],
+                    "schema": "threat_model",
+                    "prompt": "Analyze abuse cases and logical exploit paths for: {{params.codebase_description}}."
+                }
+            ]
+        },
+        {
+            "id": "module_scanning",
+            "kind": "pipeline",
+            "needs": ["threat_modeling"],
+            "items": "{{params.modules}}",
+            "stages": [
+                {
+                    "id": "dependency_check",
+                    "prefer": ["codex"],
+                    "schema": "findings",
+                    "prompt": "Search for known vulnerable packages or unsafe dependencies in module: {{item}}."
+                },
+                {
+                    "id": "static_analysis",
+                    "prefer": ["gemini"],
+                    "schema": "findings",
+                    "prompt": "Identify code-level vulnerabilities (e.g. hardcoded secrets, injection, unsafe functions) in module: {{item}}."
+                }
+            ]
+        },
+        {
+            "id": "remediation_loop",
+            "kind": "loop",
+            "needs": ["module_scanning"],
+            "max_iterations": 3,
+            "until": {
+                "agent": {
+                    "prompt": "Assess accumulated patches so far: {{loop.collected}}. Are all high-risk items fixed? verdict=STOP if complete, else CONTINUE and specify what's missing.",
+                    "stop_when": "STOP",
+                    "prefer": ["claude"]
+                }
+            },
+            "collect": {"from": "validate_patch", "path": "patched_file"},
+            "body": [
+                {
+                    "id": "generate_patch",
+                    "kind": "agent",
+                    "prefer": ["codex"],
+                    "prompt": "Generate a remediation patch based on module scanning findings. Focused on: {{loop.decision.missing}}. Previous attempts: {{loop.collected}}."
+                },
+                {
+                    "id": "validate_patch",
+                    "kind": "agent",
+                    "schema": "patch_result",
+                    "prefer": ["gemini"],
+                    "prompt": "Verify the patch from generate_patch (value: {{loop.last.generate_patch.value}}). Ensure no regressions are introduced."
+                }
+            ]
+        },
+        {
+            "id": "final_coordinator",
+            "kind": "supervisor",
+            "needs": ["remediation_loop"],
+            "watch": ["threat_modeling", "remediation_loop"],
+            "prefer": ["claude"],
+            "when": {"path": "steps.remediation_loop", "select": "stop_reason", "eq": "max_iterations"},
+            "prompt": "Review the full audit results. If remediation_loop has failed or is incomplete, inject a manual_triage step. Otherwise, set action=continue."
+        }
+    ],
+    "output": {
+        "scope_status": "{{steps.scope_check.value}}",
+        "threats_found": "{{steps.threat_modeling.value}}",
+        "scanned_findings": "{{steps.module_scanning.value}}",
+        "patches_applied": "{{steps.remediation_loop.value}}",
+        "supervision_action": "{{steps.final_coordinator.value}}",
+        "manual_triage_result": "{{steps.manual_triage.value}}"
+    }
+}
+
 BUILTIN: dict[str, dict[str, Any]] = {
     spec["name"]: spec
-    for spec in (FAN_SYNTHESIZE, REVIEW, ROADMAP, DEEP_REVIEW, ADAPTIVE_REVIEW)
+    for spec in (FAN_SYNTHESIZE, REVIEW, ROADMAP, DEEP_REVIEW, ADAPTIVE_REVIEW, COMPLEX_SECURITY_AUDIT)
 }
 
 DEFAULT_RECIPE_DIR = ".iworkflow/recipes"
