@@ -707,7 +707,9 @@ class _Executor:
         out = self._result(res, kind="agent")
         if not res.ok and a.required:
             attempts = ", ".join(f"{x.provider}:{x.outcome}" for x in res.attempts)
-            raise WorkflowError(f"agent step {step.id!r} exhausted without a result ({attempts})")
+            timeout = f", timeout_s={a.timeout_s}" if a.timeout_s is not None else ""
+            raise WorkflowError(
+                f"agent step {label!r} exhausted without a result ({attempts}{timeout})")
         if a.gate and res.ok:
             field_name = a.gate.get("field")
             value = res.value.get(field_name) if isinstance(res.value, dict) and field_name \

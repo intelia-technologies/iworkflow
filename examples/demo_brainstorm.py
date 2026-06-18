@@ -88,19 +88,24 @@ class DemoBrainstormProvider(Provider):
                 ]
             }
 
-        if "Is the scope locked" in prompt:
+        if "Return STOP if selected approach" in prompt:
             print("[SIMULATOR] Phase 5 (Until Decider): Evaluation of current state...")
             self.iterations += 1
-            # Stop loop on second iteration to simulate scope locking after one user reply
+            # Stop loop on second iteration to simulate scope locking after one user reply.
             if self.iterations >= 2:
                 print("[SIMULATOR] Verdict: STOP (Scope Locked)")
                 return {"verdict": "STOP", "missing": []}
             print("[SIMULATOR] Verdict: CONTINUE (Still waiting on user clarification)")
-            return {"verdict": "CONTINUE", "missing": ["Esperando aclaración del usuario sobre el motor de DB."]}
+            return {"verdict": "CONTINUE", "missing": ["Confirmar motor de base de datos elegido."]}
 
-        if "Refine the direction until scope is locked" in prompt:
+        if "Lock the brainstorm scope" in prompt:
             print("[SIMULATOR] Phase 5: Processing user input...")
-            return "Processed user preference: User prefers PostgreSQL due to scaling requirements."
+            return {
+                "selected_approach": "Option B: PostgreSQL",
+                "constraints": ["Prefer scalability over zero-infra setup"],
+                "unresolved_forks": [],
+                "next_action": "Write brainstorm.md for PostgreSQL architecture",
+            }
 
         if "Write the final brainstorm" in prompt:
             print("[SIMULATOR] Phase 6: Writing brainstorm specification document...")

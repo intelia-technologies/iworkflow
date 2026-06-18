@@ -384,15 +384,19 @@ BRAINSTORM: dict[str, Any] = {
             "agents": [
                 {
                     "id": "inspect_code",
-                    "prefer": ["gemini"],
+                    "prefer": ["gemini", "codex", "claude"],
                     "model": "pro",
+                    "timeout_s": 120,
+                    "heartbeat_interval_s": 30,
                     "tools": ["grep", "find"],
                     "prompt": "Analyze existing code and specs related to {{params.change_name}}."
                 },
                 {
                     "id": "inspect_rules",
-                    "prefer": ["gemini"],
+                    "prefer": ["gemini", "codex", "claude"],
                     "model": "flash",
+                    "timeout_s": 60,
+                    "heartbeat_interval_s": 15,
                     "tools": ["read"],
                     "prompt": "Extract relevant 'learnings' and 'rules' from the project documentation."
                 }
@@ -411,14 +415,15 @@ BRAINSTORM: dict[str, Any] = {
         {
             "id": "phase5_dialogue_loop",
             "kind": "loop",
-            "max_iterations": 5,
+            "max_iterations": 3,
+            "collect": {"from": "chat"},
             "until": {
                 "agent": {
-                    "prompt": "Review the dialogue: {{loop.collected}}. Is the scope locked and all forks resolved? Return STOP or CONTINUE.",
+                    "prompt": "Review the concise dialogue entries: {{loop.collected}}. Return STOP if selected approach, constraints, and next action are clear; otherwise CONTINUE with missing items.",
                     "stop_when": "STOP",
                     "prefer": ["gemini", "codex", "claude"],
-                    "timeout_s": 60,
-                    "heartbeat_interval_s": 15
+                    "timeout_s": 120,
+                    "heartbeat_interval_s": 30
                 }
             },
             "body": [
@@ -427,9 +432,9 @@ BRAINSTORM: dict[str, Any] = {
                     "kind": "agent",
                     "prefer": ["gemini", "codex", "claude"],
                     "models": {"claude": "sonnet-3.5"},
-                    "timeout_s": 60,
-                    "heartbeat_interval_s": 15,
-                    "prompt": "Current status: {{loop.collected}}. User says: {{params.user_input}}. Refine the direction until scope is locked."
+                    "timeout_s": 180,
+                    "heartbeat_interval_s": 30,
+                    "prompt": "Lock the brainstorm scope using only these proposals and the latest user input. Keep the answer concise; do not repeat full prior context. Proposals: {{steps.phase4_proposals.value}}. User input: {{params.user_input}}. Return the selected approach, constraints, unresolved forks, and next action. Previous concise dialogue: {{loop.collected}}."
                 }
             ]
         },
@@ -443,7 +448,7 @@ BRAINSTORM: dict[str, Any] = {
             "tools": ["write"],
             "sandbox": "write",
             "instructions": { "gh": "gh pr create --title 'Brainstorm: {{params.change_name}}' --body 'Generated via iworkflow'" },
-            "prompt": "Write the final brainstorm to 'openspec/changes/{{params.change_name}}/brainstorm.md' using the standard template. Context: {{steps.phase5_dialogue_loop.value}}."
+            "prompt": "Write the final brainstorm to 'openspec/changes/{{params.change_name}}/brainstorm.md' using the standard template. Selected direction: {{steps.phase5_dialogue_loop.value}}. Original proposals: {{steps.phase4_proposals.value}}."
         },
         {
             "id": "phase7_update_wiki",

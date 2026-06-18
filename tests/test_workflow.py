@@ -517,6 +517,12 @@ def test_brainstorm_recipe_avoids_claude_interactive_hangs():
         assert step["timeout_s"] <= 60
         assert step["heartbeat_interval_s"] <= 15
 
+    phase3 = by_id["phase3_context"]
+    for agent in phase3["agents"]:
+        assert agent["prefer"][:2] == ["gemini", "codex"]
+        assert "timeout_s" in agent
+        assert "heartbeat_interval_s" in agent
+
     assert spec["artifacts"] == [
         {"path": "openspec/changes/{{params.change_name}}/brainstorm.md", "type": "file"}
     ]
@@ -527,15 +533,21 @@ def test_brainstorm_recipe_avoids_claude_interactive_hangs():
         assert step["timeout_s"] <= 90
         assert step["heartbeat_interval_s"] <= 15
 
-    decider = by_id["phase5_dialogue_loop"]["until"]["agent"]
-    assert decider["prefer"][:2] == ["gemini", "codex"]
-    assert decider["timeout_s"] <= 60
-    assert decider["heartbeat_interval_s"] <= 15
+    loop = by_id["phase5_dialogue_loop"]
+    assert loop["max_iterations"] == 3
+    assert loop["collect"] == {"from": "chat"}
 
-    chat = by_id["phase5_dialogue_loop"]["body"][0]
+    decider = loop["until"]["agent"]
+    assert decider["prefer"][:2] == ["gemini", "codex"]
+    assert decider["timeout_s"] == 120
+    assert decider["heartbeat_interval_s"] == 30
+
+    chat = loop["body"][0]
     assert chat["prefer"][:2] == ["gemini", "codex"]
-    assert chat["timeout_s"] <= 60
-    assert chat["heartbeat_interval_s"] <= 15
+    assert chat["timeout_s"] == 180
+    assert chat["heartbeat_interval_s"] == 30
+    assert "{{steps.phase4_proposals.value}}" in chat["prompt"]
+    assert "{{params.user_input}}" in chat["prompt"]
 
 
 def test_loop_decider_propagates_timeout_and_heartbeat(tmp_path):
@@ -580,6 +592,27 @@ def test_required_agent_exhaustion_fails_workflow(tmp_path):
         _run(run_spec(runner, spec))
 
     assert "agent step 'critical' exhausted" in str(exc_info.value)
+
+
+def test_required_nested_agent_exhaustion_reports_full_label_and_timeout(tmp_path):
+    provider = FakeProvider("codex", limit_first_n=99)
+    runner = Runner("nested-exhausted", {"codex": provider}, {"codex": 1}, journal_dir=str(tmp_path))
+    spec = {"steps": [{
+        "id": "L", "kind": "loop", "max_iterations": 1,
+        "until": {"times": 1},
+        "body": [{
+            "id": "chat", "kind": "agent", "prefer": ["codex"],
+            "timeout_s": 17, "prompt": "must work",
+        }],
+    }]}
+
+    with pytest.raises(WorkflowError) as exc_info:
+        _run(run_spec(runner, spec))
+
+    message = str(exc_info.value)
+    assert "agent step 'L#0/chat' exhausted" in message
+    assert "codex:RATE_LIMITED" in message
+    assert "timeout_s=17" in message
 
 
 def test_optional_agent_exhaustion_can_continue(tmp_path):
