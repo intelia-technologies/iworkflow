@@ -1,3 +1,29 @@
+# ruff: noqa: E402
+import sys
+
+class SafeWriter:
+    def __init__(self, original):
+        self._original = original
+
+    def write(self, data):
+        try:
+            self._original.write(data)
+        except BrokenPipeError:
+            self.write = lambda x: None
+
+    def flush(self):
+        try:
+            self._original.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+sys.stdout = SafeWriter(sys.stdout)
+sys.stderr = SafeWriter(sys.stderr)
+
+
 from .providers import (
     ClaudeInteractiveProvider, ClaudeProvider, CodexProvider, CursorProvider,
     FakeProvider, GeminiProvider, Provider, ProviderError, RateLimited,

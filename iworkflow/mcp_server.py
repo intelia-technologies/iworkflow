@@ -334,11 +334,13 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
 
     `runner` is injectable so tests pass a FakeProvider-backed Runner (no quota).
     """
+    import os
+    effective_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
     rid = _resolve_run_id(run_id, goal, params)
-    resolved_journal_dir = _resolve_journal_dir(journal_dir, cwd)
+    resolved_journal_dir = _resolve_journal_dir(journal_dir, effective_cwd)
     r = runner or _default_runner(
-        rid, cwd=cwd, timeout_s=timeout_s, caps=caps,
-        catalog=_resolve_catalog(catalog_root, cwd),
+        rid, cwd=effective_cwd, timeout_s=timeout_s, caps=caps,
+        catalog=_resolve_catalog(catalog_root, effective_cwd),
         journal_dir=resolved_journal_dir,
     )
     limits = Limits(

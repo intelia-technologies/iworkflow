@@ -363,3 +363,44 @@ def test_run_workflow_logs_emit_failure(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "failed to write run error event" in err
     assert "disk full" in err
+
+
+def test_run_workflow_defaults_cwd_to_absolute_getcwd(tmp_path, monkeypatch):
+    import os
+    from iworkflow.mcp_server import run_workflow
+
+    seen_cwd = []
+
+    async def mock_run_spec(runner, spec, params=None, limits=None, preflight_checked=False):
+        seen_cwd.append(runner.default_cwd)
+        return {"status": "DONE"}
+
+    monkeypatch.setattr("iworkflow.mcp_server.run_spec", mock_run_spec)
+
+    asyncio.run(run_workflow(
+        spec={"steps": [{"id": "a", "kind": "agent", "prompt": "a"}]},
+        run_id="cwd-test",
+        journal_dir=str(tmp_path),
+        cwd=None,
+    ))
+
+    assert len(seen_cwd) == 1
+    assert seen_cwd[0] == os.path.abspath(os.getcwd())
+
+
+def test_safewriter_ignores_broken_pipe():
+    from iworkflow import SafeWriter
+
+    class BrokenPipeStream:
+        def __init__(self):
+            self.calls = 0
+        def write(self, data):
+            self.calls += 1
+            raise BrokenPipeError("[Errno 32] Broken pipe")
+
+    stream = BrokenPipeStream()
+    safe = SafeWriter(stream)
+    safe.write("test")
+    assert stream.calls == 1
+    safe.write("test")
+    assert stream.calls == 1

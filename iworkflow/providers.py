@@ -213,7 +213,8 @@ class CodexProvider(Provider):
             full_prompt = _prompt_with_toolset(prompt, toolset)
             # --json puts events (incl. token usage) on stdout; -o writes the final
             # message to a file (so the answer survives the event stream).
-            argv = ["codex", "exec", "--sandbox", sandbox, "--skip-git-repo-check",
+            codex_sandbox = "workspace-write" if sandbox == "write" else sandbox
+            argv = ["codex", "exec", "--sandbox", codex_sandbox, "--skip-git-repo-check",
                     "--color", "never", "--json", "-o", out_file]
             effective_model = model if model is not None else self.model
             if effective_model:
