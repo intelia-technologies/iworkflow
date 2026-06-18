@@ -83,7 +83,7 @@ Shared optional params on start/sync tools:
   journal after reconnect; passing the returned `journal_dir` is still the most
   explicit cross-process path. Preflight ignores the workflow journal path because
   it is iworkflow's own resume state; unrelated dirty files still block worktree
-  recipes.
+  recipes, and the error lists the blocking dirty paths.
 
 Pass **exactly one** driver to start/sync:
   - `spec={...}` — your own dynamic workflow (the DYNAMIC door).

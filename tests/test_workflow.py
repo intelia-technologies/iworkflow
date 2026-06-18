@@ -702,7 +702,9 @@ def test_preflight_ignores_iworkflow_journal_dir(tmp_path):
     )
     with pytest.raises(WorkflowError) as exc_info:
         _run(run_spec(runner2, spec, limits=Limits(allow_tools=True)))
-    assert "uncommitted changes" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "uncommitted changes" in message
+    assert "dirty.txt" in message
 
 
 def test_preflight_checks_uncommitted_changes(tmp_path):
@@ -744,4 +746,5 @@ def test_preflight_checks_uncommitted_changes(tmp_path):
         asyncio.run(run_spec(runner, spec, limits=Limits(allow_tools=True)))
     message = str(exc_info.value)
     assert "uncommitted changes" in message
+    assert "file.txt" in message
     assert str(repo) in message

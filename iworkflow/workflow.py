@@ -559,7 +559,19 @@ def check_preflight(
             check=False
         )
         if status_check.returncode == 0 and status_check.stdout.strip():
-            fail("Git repository has uncommitted changes. Please stash or commit them first.")
+            dirty = []
+            for line in status_check.stdout.splitlines():
+                entry = line[3:] if len(line) > 3 else line
+                if entry:
+                    dirty.append(entry)
+            preview = ", ".join(dirty[:10])
+            if len(dirty) > 10:
+                preview += f", … and {len(dirty) - 10} more"
+            detail = f" Dirty paths: {preview}." if preview else ""
+            fail(
+                "Git repository has uncommitted changes outside the iworkflow journal. "
+                "Please stash or commit them first." + detail
+            )
 
 
 class _Executor:
