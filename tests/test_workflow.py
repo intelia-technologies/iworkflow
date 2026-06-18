@@ -504,3 +504,43 @@ def test_resume_journals_completed_steps(tmp_path):
     out2 = _run(run_spec(r2, spec))
     assert p2._n == 0                                            # both steps journaled → 0 agents
     assert out2["steps"]["sum"] == out1["steps"]["sum"]
+
+
+def test_preflight_checks_uncommitted_changes(tmp_path):
+    import subprocess
+    from iworkflow import run_spec, Runner, FakeProvider, Limits
+    from iworkflow.workflow import WorkflowError
+    
+    # 1. Create a git repo
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=str(repo), check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo), check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo), check=True)
+    
+    # Create first commit so we can have status check
+    (repo / "file.txt").write_text("hello")
+    subprocess.run(["git", "add", "file.txt"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-m", "first"], cwd=str(repo), check=True)
+    
+    # Now write an uncommitted change
+    (repo / "file.txt").write_text("modified")
+    
+    # Create the runner pointing to this repo CWD
+    codex = FakeProvider("codex")
+    runner = Runner("preflight-test", {"codex": codex}, {"codex": 1}, journal_dir=str(tmp_path), default_cwd=str(repo))
+    
+    spec = {
+        "name": "preflight_test",
+        "execution": {
+            "worktree": "new:branch-name"
+        },
+        "steps": [
+            {"id": "s1", "kind": "agent", "prefer": ["codex"], "prompt": "hello"}
+        ]
+    }
+    
+    # Run should raise WorkflowError due to uncommitted changes
+    with pytest.raises(WorkflowError) as exc_info:
+        asyncio.run(run_spec(runner, spec, limits=Limits(allow_tools=True)))
+    assert "uncommitted changes" in str(exc_info.value)
