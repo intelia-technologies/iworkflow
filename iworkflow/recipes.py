@@ -386,7 +386,7 @@ BRAINSTORM: dict[str, Any] = {
                     "id": "inspect_code",
                     "prefer": ["gemini", "codex", "claude"],
                     "model": "pro",
-                    "timeout_s": 120,
+                    "timeout_s": 300,
                     "heartbeat_interval_s": 30,
                     "tools": ["grep", "find"],
                     "prompt": "Analyze existing code and specs related to {{params.change_name}}."
@@ -395,7 +395,7 @@ BRAINSTORM: dict[str, Any] = {
                     "id": "inspect_rules",
                     "prefer": ["gemini", "codex", "claude"],
                     "model": "flash",
-                    "timeout_s": 60,
+                    "timeout_s": 120,
                     "heartbeat_interval_s": 15,
                     "tools": ["read"],
                     "prompt": "Extract relevant 'learnings' and 'rules' from the project documentation."
@@ -408,7 +408,7 @@ BRAINSTORM: dict[str, Any] = {
                     "prefer": ["gemini", "codex", "claude"],
                     "role": "solution_designer",
                     "schema": "proposal",
-                    "timeout_s": 60,
+                    "timeout_s": 120,
                     "heartbeat_interval_s": 15,
                     "prompt": "Using context from {{steps.phase3_context.value}}, propose 2-3 technical approaches for {{params.change_name}}. Include honest pros/contras for each."
                 },

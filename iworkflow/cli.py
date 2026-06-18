@@ -225,7 +225,7 @@ def _default_cli_run_id() -> str:
 def _cmd_run(name: str | None, goal: str | None, params_json: str | None,
              spec_path: str | None, run_id: str | None, recipe_dir: str | None,
              cwd: str | None, timeout_s: float, caps_json: str | None,
-             journal_dir: str, allow_tools: bool = True) -> None:
+             journal_dir: str, allow_tools: bool = True, skip_preflight: bool = False) -> None:
     import asyncio
 
     from .mcp_server import run_workflow
@@ -246,6 +246,7 @@ def _cmd_run(name: str | None, goal: str | None, params_json: str | None,
         caps=caps,
         journal_dir=journal_dir,
         allow_tools=allow_tools,
+        preflight_checked=skip_preflight,
     ))
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
 
@@ -435,6 +436,7 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("--caps", default=None, help='JSON caps object, e.g. {"codex":2}')
     p_run.add_argument("--journal-dir", default=".iworkflow")
     p_run.add_argument("--deny-tools", dest="allow_tools", action="store_false", default=True, help="disable tool/MCP injection for this run")
+    p_run.add_argument("--skip-preflight", action="store_true", help="skip all pre-flight checks (git repo, git clean status, gh auth status)")
 
     p_stats = sub.add_parser("stats", help="show telemetry from past runs (the logs)")
     p_stats.add_argument("--journal-dir", default=".iworkflow")
@@ -479,7 +481,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "workflows":
         _cmd_workflows(args.recipe_dir)
     elif args.cmd == "run":
-        _cmd_run(args.name, args.goal, args.params, args.spec, args.run_id, args.recipe_dir, args.cwd, args.timeout, args.caps, args.journal_dir, args.allow_tools)
+        _cmd_run(args.name, args.goal, args.params, args.spec, args.run_id, args.recipe_dir, args.cwd, args.timeout, args.caps, args.journal_dir, args.allow_tools, args.skip_preflight)
     elif args.cmd == "stats":
         _cmd_stats(args.journal_dir, args.run_id)
     elif args.cmd == "status":

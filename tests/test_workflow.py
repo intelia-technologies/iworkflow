@@ -511,12 +511,17 @@ def test_brainstorm_recipe_avoids_claude_interactive_hangs():
     spec = get_recipe("brainstorm")
     by_id = {step["id"]: step for step in spec["steps"]}
 
-    for sid in ["phase1_search", "phase2_clarification", "phase4_proposals", "phase8_handoff"]:
+    for sid in ["phase1_search", "phase2_clarification", "phase8_handoff"]:
         step = by_id[sid]
         assert step["prefer"][:2] == ["gemini", "codex"]
         assert step["prefer"] != ["claude:opus"]
         assert step["timeout_s"] <= 60
         assert step["heartbeat_interval_s"] <= 15
+
+    phase4 = by_id["phase4_proposals"]
+    assert phase4["prefer"][:2] == ["gemini", "codex"]
+    assert phase4["timeout_s"] == 120
+    assert phase4["heartbeat_interval_s"] <= 15
 
     phase3 = by_id["phase3_context"]
     for agent in phase3["agents"]:
