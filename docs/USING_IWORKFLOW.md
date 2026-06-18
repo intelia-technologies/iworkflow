@@ -61,7 +61,8 @@ own reasoning. `iworkflow register` once, then these tools appear:
 - `iworkflow_ping()` — liveness.
 - `iworkflow_list_workflows(recipe_dir?)` — recipes (built-in + host dir).
 - `iworkflow_workflow_start(goal? | workflow?+params? | spec?, …)` — **start** a
-  workflow without blocking. Returns `{run_id, status: "started"}`.
+  workflow without blocking. Returns `{run_id, status: "started"}` or a
+  synchronous `{status: "error", error: "pre-flight check failed: ..."}`.
 - `iworkflow_workflow_stream(run_id, after=0, block_s=5)` — **incremental progress**
   from `events.jsonl` (SSE-like long-poll). Use returned `next_after` as cursor.
 - `iworkflow_workflow_poll(run_id)` — snapshot poll (status + tail of events).
@@ -89,12 +90,32 @@ while True:
   chunk = iworkflow_workflow_stream(start["run_id"], after=after, block_s=5)
   after = chunk["next_after"]
   # handle chunk["events"] …
-  if chunk["status"] in {"done", "error", "unknown_done"}:
+  if chunk["status"] in {"done", "error", "unknown_done", "failed_to_start", "not_found"}:
     break
 ```
 
+Terminal stream statuses are `done`, `error`, `unknown_done`, `failed_to_start`,
+and `not_found`. `failed_to_start` usually means the run directory was created but
+no event could be written; `not_found` means no run directory exists for that
+`run_id` in the selected `journal_dir`.
+
 The result returns as a **structured tool result** (no stdout parsing), and tools
 are **discoverable** in the agent's tool list.
+
+#### MCP stdio lifecycle / disconnection
+
+Claude Code owns stdio MCP server processes. If `iworkflow-mcp` is killed while a
+Claude Code session is active, that session's tool registry can mark the
+`iworkflow_*` tools as unavailable and will not reconnect them mid-session. A new
+`iworkflow-mcp` PID elsewhere does not repair the broken stdio pipe. Recovery is
+client-side: restart the Claude Code session (or remove/re-add the MCP server if
+the client supports that) so tools are rediscovered.
+
+Do not use `pkill -f iworkflow-mcp` as a normal refresh path for a live session. If
+MCP tools are unavailable, use the CLI door (`iworkflow run`, `iworkflow status`,
+`iworkflow stats`) from Bash against the same `.iworkflow` journal until the host
+session is restarted.
+
 ### C) SDK — embedding, tests, custom providers, widening Limits
 ```python
 from iworkflow import Runner, run_spec, Limits, FakeProvider
@@ -106,9 +127,11 @@ providers. This is what the test suite and `examples/` use.
 
 ### Which door (for an agent)
 - **MCP** when it's registered → structured I/O, discoverable, `start`+`stream` for
-  long runs. The default for "this agent orchestrates iworkflow inline".
+  long runs. The default for "this agent orchestrates iworkflow inline" while the
+  MCP stdio connection is healthy.
 - **CLI (Bash)** when you need `stats`, `graph`, explicit `--run-id` control, or
-  there's no MCP host (CI, cron, scripts). The universal fallback.
+  there's no MCP host / the MCP stdio process died mid-session. The universal
+  fallback.
 - **SDK** when embedding iworkflow in code, writing tests, or you must raise `Limits`.
 - They compose: launch over MCP, inspect the same run with `iworkflow stats` over Bash
   — the journal is shared.
