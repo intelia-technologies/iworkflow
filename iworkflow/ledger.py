@@ -53,6 +53,7 @@ class LedgerRecord:
     output_tokens: int | None = None
     cost_usd: float | None = None                    # if the provider reports cost (Claude)
     model: str | None = None                         # CLI model id used for this agent
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping for persistence."""

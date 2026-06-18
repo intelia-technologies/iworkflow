@@ -252,6 +252,8 @@ class AgentSpec:
     sandbox: str = "read-only"
     tools: list[str] | None = None
     gate: dict[str, Any] | None = None
+    timeout_s: int | None = None
+    heartbeat_interval_s: int | None = None
 
 
 @dataclass
@@ -341,6 +343,8 @@ def _parse_agent(d: dict[str, Any], fallback_id: str, limits: Limits) -> AgentSp
         sandbox=sandbox,
         tools=tools,
         gate=d.get("gate"),
+        timeout_s=d.get("timeout_s"),
+        heartbeat_interval_s=d.get("heartbeat_interval_s"),
     )
 
 
@@ -580,11 +584,13 @@ class _Executor:
             role=a.role,
             sandbox=a.sandbox,
             tools=a.tools,
+            timeout_s=a.timeout_s,
+            heartbeat_interval_s=a.heartbeat_interval_s,
         )
 
     @staticmethod
     def _result(res: AgentResult, **extra: Any) -> dict[str, Any]:
-        return {"value": res.value, "provider": res.provider, "ok": res.ok, **extra}
+        return {"value": res.value, "provider": res.provider, "ok": res.ok, "timeout": res.timeout, "last_heartbeat": res.last_heartbeat, **extra}
 
     # --- dispatch ---------------------------------------------------------
     async def _exec_step(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
@@ -648,12 +654,13 @@ class _Executor:
         filters which prior steps' values are exposed; `remaining` lists the steps
         still ahead so the coordinator can reason about what's left to do."""
         watch = step.watch
+        steps_info = {sid: r for sid, r in self.ctx["steps"].items() if watch is None or sid in watch}
         steps_state = {sid: r.get("value") for sid, r in self.ctx["steps"].items()
                        if watch is None or sid in watch}
         done = set(self.ctx["steps"])
         remaining = [s.id for s in self.plan
                      if s.id not in done and s.kind != "supervisor"]
-        return {"steps": steps_state, "remaining": remaining, "params": dict(self.params)}
+        return {"steps": steps_state, "steps_info": steps_info, "remaining": remaining, "params": dict(self.params)}
 
     async def _exec_supervisor(self, step: Step, index: int) -> dict[str, Any]:
         a = step.supervisor

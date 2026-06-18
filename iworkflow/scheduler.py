@@ -33,7 +33,7 @@ def log(msg: str) -> None:
 @dataclass
 class Attempt:
     provider: str
-    outcome: str          # DONE | RATE_LIMITED | ERROR
+    outcome: str          # DONE | RATE_LIMITED | ERROR | TIMEOUT
     detail: str = ""
 
 
@@ -46,6 +46,8 @@ class AgentResult:
     attempts: list[Attempt] = field(default_factory=list)
     resumed: bool = False
     prompt_sha: str | None = None
+    timeout: bool = False
+    last_heartbeat: float | None = None
 
     @property
     def ok(self) -> bool:
@@ -87,7 +89,9 @@ class Runner:
     def _load_done(self) -> dict[str, AgentResult]:
         done = {label: AgentResult(label=label, status="DONE", provider=rec.get("provider"),
                                    value=rec.get("value"), resumed=True,
-                                   prompt_sha=rec.get("prompt_sha"))
+                                   prompt_sha=rec.get("prompt_sha"),
+                                   timeout=rec.get("timeout", False),
+                                   last_heartbeat=rec.get("last_heartbeat"))
                 for label, rec in self.ledger.load_done().items()}
         if done:
             log(f"resume: {len(done)} agent(s) recovered from ledger {self.ledger.path}")
@@ -110,7 +114,8 @@ class Runner:
                          else None),
             retry_after=None, kind=kind, tools=list(tools),
             input_tokens=u.get("input_tokens"), output_tokens=u.get("output_tokens"),
-            cost_usd=u.get("cost_usd"), model=model or u.get("model")))
+            cost_usd=u.get("cost_usd"), model=model or u.get("model"),
+            extra={"timeout": res.timeout, "last_heartbeat": res.last_heartbeat}))
 
     # --- the agent() primitive -------------------------------------------
     async def agent(self, prompt: str, *, label: str, schema: dict | None = None,
@@ -121,7 +126,9 @@ class Runner:
                     sandbox: str = "read-only",
                     cwd: str | None = None,
                     tools: list[str] | None = None,
-                    auto_tools: int | None = None) -> AgentResult:
+                    auto_tools: int | None = None,
+                    timeout_s: int | None = None,
+                    heartbeat_interval_s: int | None = None) -> AgentResult:
         prompt_hash = sha(prompt)
         if label in self._done:
             cached = self._done[label]
@@ -170,6 +177,8 @@ class Runner:
         self._emit(label, "route", kind=why, order=format_prefer(targets),
                    tools=list(tool_names))
         attempts: list[Attempt] = []
+        last_heartbeat: float | None = None
+
         for name, target_model in targets:
             prov = self.providers[name]
             # throttle-aware: skip a provider still cooling down from a recent limit,
@@ -187,14 +196,35 @@ class Runner:
                 model_note = f" model={dispatch_model}" if dispatch_model else ""
                 log(f"DISPATCH {label} → {name}{model_note} (cap {self.caps.get(name)})")
                 self._emit(label, "dispatch", provider=name, model=dispatch_model)
+                
+                heartbeat_task = None
+                if heartbeat_interval_s:
+                    async def heartbeat_loop():
+                        nonlocal last_heartbeat
+                        while True:
+                            await asyncio.sleep(heartbeat_interval_s)
+                            last_heartbeat = time.time()
+                            log(f"HEARTBEAT {label} ← {name}")
+                            self._emit(label, "heartbeat", provider=name)
+                    heartbeat_task = asyncio.create_task(heartbeat_loop())
+
                 try:
-                    value = await prov.run(prompt, schema=use_schema,
-                                           sandbox=sandbox, cwd=effective_cwd,
-                                           toolset=toolset, model=dispatch_model)
+                    coro = prov.run(prompt, schema=use_schema,
+                                    sandbox=sandbox, cwd=effective_cwd,
+                                    toolset=toolset, model=dispatch_model)
+                    if timeout_s:
+                        value = await asyncio.wait_for(coro, timeout=timeout_s)
+                    else:
+                        value = await coro
+                    
+                    if heartbeat_task:
+                        heartbeat_task.cancel()
+
                     # read usage immediately (no await between → race-free in asyncio)
                     usage = getattr(prov, "last_usage", None) or {}
                     attempts.append(Attempt(name, "DONE"))
-                    res = AgentResult(label, "DONE", name, value, attempts, prompt_sha=prompt_hash)
+                    res = AgentResult(label, "DONE", name, value, attempts, 
+                                      prompt_sha=prompt_hash, last_heartbeat=last_heartbeat)
                     self._done[label] = res      # within-process dedup, not just cross-process
                     self._record(res, prompt=prompt, schema=schema, attempts=attempts,
                                  t_start=t_start, kind=why, tools=tool_names, usage=usage,
@@ -206,7 +236,16 @@ class Runner:
                                cost_usd=usage.get("cost_usd"))
                     log(f"DONE     {label} ← {name}")
                     return res
+                except asyncio.TimeoutError:
+                    if heartbeat_task:
+                        heartbeat_task.cancel()
+                    attempts.append(Attempt(name, "TIMEOUT", f"Exceeded {timeout_s}s"))
+                    log(f"TIMEOUT  {label} ✗ {name} ({timeout_s}s) → failover")
+                    self._emit(label, "timeout", provider=name, timeout_s=timeout_s)
+                    continue
                 except RateLimited as e:
+                    if heartbeat_task:
+                        heartbeat_task.cancel()
                     attempts.append(Attempt(name, "RATE_LIMITED", str(e)[:120]))
                     if self.cooldown_s:
                         self.ledger.record_cooldown(name, time.time() + self.cooldown_s)
@@ -214,11 +253,19 @@ class Runner:
                     self._emit(label, "limited", provider=name)
                     continue
                 except ProviderError as e:
+                    if heartbeat_task:
+                        heartbeat_task.cancel()
                     attempts.append(Attempt(name, "ERROR", str(e)[:120]))
                     log(f"ERROR    {label} ✗ {name}: {str(e)[:80]} → failover")
                     self._emit(label, "error", provider=name, detail=str(e)[:120])
                     continue
-        res = AgentResult(label, "EXHAUSTED", None, None, attempts)
+                finally:
+                    if heartbeat_task and not heartbeat_task.done():
+                        heartbeat_task.cancel()
+
+        res = AgentResult(label, "EXHAUSTED", None, None, attempts, 
+                          timeout=(attempts[-1].outcome == "TIMEOUT" if attempts else False),
+                          last_heartbeat=last_heartbeat)
         self._record(res, prompt=prompt, schema=schema, attempts=attempts,
                      t_start=t_start, kind=why, tools=tool_names)
         self._emit(label, "exhausted", attempts=[a.provider for a in attempts])

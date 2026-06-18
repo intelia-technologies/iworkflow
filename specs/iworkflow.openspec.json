@@ -3,7 +3,7 @@
   "info": {
     "name": "iworkflow",
     "summary": "Deterministic multi-agent workflow orchestrator (CLI, MCP, Python SDK).",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "Reference contract for iworkflow. Workflows are pure data specs executed by a deterministic Python runner; workers are subscription CLIs (codex, gemini, claude). The same spec can be produced by an LLM planner and executed via CLI/MCP/SDK."
   },
   "types": {
@@ -45,6 +45,8 @@
         "model": { "type": "string", "description": "Provider/model override." },
         "sandbox": { "type": "string", "description": "Sandbox name (default read-only)." },
         "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool allowlist (honored only if policy allow_tools=true)." },
+        "timeout_s": { "type": "integer", "description": "Max duration for this agent call.", "default": 300 },
+        "heartbeat_interval_s": { "type": "integer", "description": "Expected frequency of progress updates.", "default": 60 },
         "gate": {
           "type": "object",
           "description": "Abort guard evaluated on the agent result.",
@@ -118,6 +120,8 @@
             "model": { "type": "string" },
             "sandbox": { "type": "string" },
             "tools": { "type": "array", "items": { "type": "string" } },
+            "timeout_s": { "type": "integer" },
+            "heartbeat_interval_s": { "type": "integer" },
             "gate": { "$ref": "#/types/AgentSpec/properties/gate" },
             "instructions": { "$ref": "#/types/AgentSpec/properties/instructions" }
           },
@@ -171,14 +175,24 @@
         {
           "title": "supervisor",
           "type": "object",
-          "required": ["id", "kind", "supervisor"],
+          "required": ["id", "kind", "prompt"],
           "properties": {
             "id": { "type": "string" },
             "kind": { "const": "supervisor" },
             "needs": { "type": "array", "items": { "type": "string" } },
             "watch": { "type": "array", "items": { "type": "string" } },
-            "when": { "$ref": "#/types/When" },
-            "supervisor": { "$ref": "#/types/AgentSpec" }
+            "when": { 
+              "description": "Guard condition. Can check steps_info.sid.timeout == true.",
+              "$ref": "#/types/When" 
+            },
+            "prompt": { "type": "string" },
+            "prefer": { "type": "array", "items": { "type": "string" } },
+            "role": { "type": "string" },
+            "model": { "type": "string" },
+            "sandbox": { "type": "string" },
+            "tools": { "type": "array", "items": { "type": "string" } },
+            "timeout_s": { "type": "integer" },
+            "heartbeat_interval_s": { "type": "integer" }
           },
           "additionalProperties": false
         }
