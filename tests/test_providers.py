@@ -63,6 +63,31 @@ def test_exec_runs_subprocess_in_cwd(tmp_path):
     assert stdout.strip() == str(tmp_path)
 
 
+def test_exec_emits_output_chunks(tmp_path):
+    provider = Provider("base")
+    events = []
+
+    code, stdout, stderr = asyncio.run(
+        provider._exec(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                "import sys, time; print('alpha'); sys.stdout.flush(); time.sleep(0.05); print('omega')",
+            ],
+            "",
+            cwd=str(tmp_path),
+            on_event=lambda event, fields: events.append((event, fields)),
+        )
+    )
+
+    assert code == 0
+    assert stderr == ""
+    assert stdout == "alpha\nomega\n"
+    assert "alpha" in "".join(fields["text"] for event, fields in events if event == "output")
+    assert "omega" in "".join(fields["text"] for event, fields in events if event == "output")
+
+
 def test_claude_interactive_starts_tmux_session_in_cwd(tmp_path, monkeypatch):
     cwd = tmp_path / "repo with spaces"
     cwd.mkdir()
@@ -183,7 +208,7 @@ def test_cursor_provider_run_returns_text(monkeypatch):
 
     provider = CursorProvider("cursor", model="composer-2.5", timeout_s=5)
 
-    async def fake_exec(argv, stdin, cwd=None):
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
         assert argv[:4] == ["cursor-agent", "-p", "--model", "composer-2.5"]
         assert "--yolo" in argv
         assert "--trust" in argv
@@ -205,7 +230,7 @@ def test_cursor_provider_requires_login(monkeypatch):
 
     provider = CursorProvider("cursor", timeout_s=5)
 
-    async def fake_exec(argv, stdin, cwd=None):
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
         return 1, "Press any key to sign in", "Cursor Agent"
 
     monkeypatch.setattr(provider, "_exec", fake_exec)

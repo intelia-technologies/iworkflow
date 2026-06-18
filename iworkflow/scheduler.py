@@ -11,6 +11,7 @@ Zero API tokens (workers are the CLIs). Zero coordination tokens (this is code).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import sys
 import time
@@ -210,9 +211,28 @@ class Runner:
                     heartbeat_task = asyncio.create_task(heartbeat_loop())
 
                 try:
-                    coro = prov.run(prompt, schema=use_schema,
-                                    sandbox=sandbox, cwd=effective_cwd,
-                                    toolset=toolset, model=dispatch_model)
+                    def provider_event(event: str, fields: dict[str, Any]) -> None:
+                        if event == "output":
+                            text = str(fields.get("text", ""))
+                            if text:
+                                self._emit(
+                                    label,
+                                    "output",
+                                    provider=name,
+                                    stream=fields.get("stream", "stdout"),
+                                    text=text,
+                                )
+
+                    kwargs = {
+                        "schema": use_schema,
+                        "sandbox": sandbox,
+                        "cwd": effective_cwd,
+                        "toolset": toolset,
+                        "model": dispatch_model,
+                    }
+                    if "on_event" in inspect.signature(prov.run).parameters:
+                        kwargs["on_event"] = provider_event
+                    coro = prov.run(prompt, **kwargs)
                     if timeout_s:
                         value = await asyncio.wait_for(coro, timeout=timeout_s)
                     else:

@@ -142,6 +142,12 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 
     window.selectStep = function(stepId) {
       selectedStepId = stepId;
+      const step = findStepInSpec(stepId);
+      if (step && step.kind === 'command') {
+        window.setTab('result');
+      } else {
+        window.setTab('prompt');
+      }
       document.getElementById('drawer').classList.remove('translate-x-full');
       updateDrawer();
     };
@@ -186,7 +192,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       let provider = 'N/A';
       
       const doneEv = stepEvents.find(e => e.event === 'done');
-      const errorEv = stepEvents.find(e => e.event === 'error' || e.event === 'exhausted');
+      const errorEv = stepEvents.find(e => e.event === 'error' || e.event === 'exhausted' || e.event === 'timeout');
       const dispatchEv = stepEvents.find(e => e.event === 'dispatch');
 
       if (doneEv) {
@@ -214,9 +220,16 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       const lastDispatch = [...stepEvents].reverse().find(e => e.event === 'dispatch' || e.event === 'route');
       document.getElementById('val-prompt').innerText = step.prompt || (step.agent ? step.agent.prompt : '') || 'N/A';
 
-      // 2. Result
+      // 2. Result + live output
       const resultObj = currentData.steps[selectedStepId];
-      document.getElementById('val-result').innerText = resultObj ? JSON.stringify(resultObj, null, 2) : '{}';
+      const outputText = stepEvents
+        .filter(e => e.event === 'output' && e.text)
+        .map(e => `[${e.stream || 'stdout'}] ${e.text}`)
+        .join('');
+      const resultText = resultObj ? JSON.stringify(resultObj, null, 2) : '{}';
+      document.getElementById('val-result').innerText = outputText
+        ? `${outputText}\n\n--- final result ---\n${resultText}`
+        : resultText;
 
       // 3. Events list
       const evContainer = document.getElementById('val-events');
@@ -227,7 +240,10 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         stepEvents.forEach(ev => {
           const div = document.createElement('div');
           div.className = 'p-3 bg-slate-900 text-slate-300 rounded border border-slate-800 font-mono text-xs';
-          div.innerText = `[${new Date(ev.ts * 1000).toLocaleTimeString()}] ${ev.event.toUpperCase()} - ${JSON.stringify(ev)}`;
+          const preview = ev.event === 'output' && ev.text
+            ? {...ev, text: ev.text.length > 240 ? ev.text.slice(0, 240) + '…' : ev.text}
+            : ev;
+          div.innerText = `[${new Date(ev.ts * 1000).toLocaleTimeString()}] ${ev.event.toUpperCase()} - ${JSON.stringify(preview)}`;
           evContainer.appendChild(div);
         });
       }
@@ -303,11 +319,11 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         if (stepId.includes('/')) stepId = stepId.split('/').pop();
         if (stepId.includes(':')) stepId = stepId.split(':').pop();
 
-        if (e.event === 'dispatch') {
-          stepStates[stepId] = 'running';
+        if (e.event === 'dispatch' || e.event === 'output' || e.event === 'heartbeat') {
+          if (stepStates[stepId] !== 'done' && stepStates[stepId] !== 'error') stepStates[stepId] = 'running';
         } else if (e.event === 'done') {
           stepStates[stepId] = 'done';
-        } else if (e.event === 'error' || e.event === 'exhausted') {
+        } else if (e.event === 'error' || e.event === 'exhausted' || e.event === 'timeout') {
           stepStates[stepId] = 'error';
         }
       });
@@ -346,6 +362,11 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       const lastEv = currentData.events[currentData.events.length - 1];
       if (lastEv && lastEv.event === 'run') {
         status = lastEv.status === 'DONE' ? 'DONE' : lastEv.status === 'ERROR' ? 'ERROR' : 'RUNNING';
+      } else {
+        const states = Object.values(stepStates);
+        if (states.includes('error')) status = 'ERROR';
+        else if (states.length && currentData.spec.steps.every(s => stepStates[s.id] === 'done')) status = 'DONE';
+        else if (states.includes('running')) status = 'RUNNING';
       }
       const statusEl = document.getElementById('hdr-status');
       statusEl.innerText = status;

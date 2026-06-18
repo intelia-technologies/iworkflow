@@ -15,12 +15,13 @@ Structured output is provider-aware:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import re
 import tempfile
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from .minijsonschema import validate
 from .toolsets import ToolSet
@@ -123,6 +124,7 @@ class Provider:
         cwd: str | None = None,
         toolset: ToolSet | None = None,
         model: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -145,6 +147,7 @@ class Provider:
         argv: list[str],
         stdin: str,
         cwd: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> tuple[int, str, str]:
         import os
         from pathlib import Path
@@ -168,14 +171,57 @@ class Provider:
             cwd=cwd,
             env=env,
         )
+
+        stdout_parts: list[bytes] = []
+        stderr_parts: list[bytes] = []
+
+        async def feed_stdin() -> None:
+            if proc.stdin is None:
+                return
+            if stdin:
+                proc.stdin.write(stdin.encode())
+                await proc.stdin.drain()
+            proc.stdin.close()
+
+        async def read_stream(stream: asyncio.StreamReader | None, name: str, parts: list[bytes]) -> None:
+            if stream is None:
+                return
+            while True:
+                chunk = await stream.read(4096)
+                if not chunk:
+                    break
+                parts.append(chunk)
+                if on_event is not None:
+                    on_event("output", {"stream": name, "text": chunk.decode(errors="replace")})
+
         try:
-            out, err = await asyncio.wait_for(
-                proc.communicate(stdin.encode()), timeout=self.timeout_s
+            await asyncio.wait_for(
+                asyncio.gather(
+                    feed_stdin(),
+                    read_stream(proc.stdout, "stdout", stdout_parts),
+                    read_stream(proc.stderr, "stderr", stderr_parts),
+                    proc.wait(),
+                ),
+                timeout=self.timeout_s,
             )
         except asyncio.TimeoutError:
             proc.kill()
-            return 124, "", "timeout"
-        return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
+            await proc.wait()
+            return 124, b"".join(stdout_parts).decode(errors="replace"), "".join([b"".join(stderr_parts).decode(errors="replace"), "timeout"])
+        return proc.returncode, b"".join(stdout_parts).decode(errors="replace"), b"".join(stderr_parts).decode(errors="replace")
+
+    async def _exec_observed(
+        self,
+        argv: list[str],
+        stdin: str,
+        cwd: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> tuple[int, str, str]:
+        kwargs: dict[str, Any] = {"cwd": cwd}
+        if on_event is not None and "on_event" in inspect.signature(self._exec).parameters:
+            kwargs["on_event"] = on_event
+        return await self._exec(argv, stdin, **kwargs)
+
 
 
 def _parse_codex_usage(stdout: str) -> dict[str, Any] | None:
@@ -204,6 +250,7 @@ class CodexProvider(Provider):
         cwd: str | None = None,
         toolset: ToolSet | None = None,
         model: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
         self.last_usage: dict[str, Any] | None = None
         schema_file = None
@@ -240,7 +287,7 @@ class CodexProvider(Provider):
                 os.close(fd)
                 argv += ["--output-schema", schema_file]
             argv += ["-"]
-            code, stdout, stderr = await self._exec(argv, full_prompt, cwd=cwd)
+            code, stdout, stderr = await self._exec_observed(argv, full_prompt, cwd=cwd, on_event=on_event)
             self._classify(code, stdout + "\n" + stderr)
             self.last_usage = _parse_codex_usage(stdout)
             with open(out_file, encoding="utf-8") as fh:
@@ -268,6 +315,7 @@ class ClaudeProvider(Provider):
         cwd: str | None = None,
         toolset: ToolSet | None = None,
         model: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
         self.last_usage: dict[str, Any] | None = None
         schema_file = mcp_file = None
@@ -296,7 +344,7 @@ class ClaudeProvider(Provider):
                 argv += ["--allowedTools", *allowed]
             if schema:
                 argv += ["--json-schema", json.dumps(schema)]
-            code, stdout, stderr = await self._exec(argv, full_prompt, cwd=cwd)
+            code, stdout, stderr = await self._exec_observed(argv, full_prompt, cwd=cwd, on_event=on_event)
             self._classify(code, stdout + "\n" + stderr)
             try:
                 envelope = json.loads(stdout)            # claude -p --output-format json envelope
@@ -339,6 +387,7 @@ class GeminiProvider(Provider):
         cwd: str | None = None,
         toolset: ToolSet | None = None,
         model: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
         argv = ["agy", "-p"]
         effective_model = model if model is not None else self.model
@@ -349,7 +398,7 @@ class GeminiProvider(Provider):
             full += ("\n\nReturn ONLY a JSON object matching this schema, "
                      "wrapped in ```json ... ```:\n" + json.dumps(schema))
         argv += [full]
-        code, stdout, stderr = await self._exec(argv, "", cwd=cwd)
+        code, stdout, stderr = await self._exec_observed(argv, "", cwd=cwd, on_event=on_event)
         self._classify(code, stdout + "\n" + stderr)
         if not schema:
             return stdout.strip()
@@ -422,6 +471,7 @@ class CursorProvider(Provider):
         cwd: str | None = None,
         toolset: ToolSet | None = None,
         model: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
         self.last_usage: dict[str, Any] | None = None
         effective = model if model is not None else self.model
@@ -448,7 +498,7 @@ class CursorProvider(Provider):
             argv.extend(["--workspace", cwd])
         argv.append(full)
 
-        code, stdout, stderr = await self._exec(argv, "", cwd=cwd)
+        code, stdout, stderr = await self._exec_observed(argv, "", cwd=cwd, on_event=on_event)
         combined = stdout + "\n" + stderr
         if _cursor_auth_required(combined):
             raise ProviderError(
@@ -510,6 +560,7 @@ class FakeProvider(Provider):
         cwd: str | None = None,
         toolset: ToolSet | None = None,
         model: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
         self._calls += 1
         self.last_usage = {"input_tokens": 10, "output_tokens": 5, "cost_usd": None}
@@ -581,6 +632,7 @@ class ClaudeInteractiveProvider(Provider):
         cwd: str | None = None,
         toolset: ToolSet | None = None,
         model: str | None = None,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
         self._seq += 1
         session = f"iwf-{os.getpid()}-{self._seq}"
@@ -619,10 +671,15 @@ class ClaudeInteractiveProvider(Provider):
 
             # completion: stable pane + (schema → fresh valid JSON) / (prose → ⏺ block)
             prev, stable = None, 0
+            last_emitted = baseline
             max_polls = int(self.timeout_s / self.poll_s)
             for _ in range(max_polls):
                 await asyncio.sleep(self.poll_s)
                 cur = await self._pane(session)
+                if on_event is not None and cur != last_emitted:
+                    delta = cur[len(last_emitted):] if cur.startswith(last_emitted) else cur
+                    on_event("output", {"stream": "tmux", "text": delta[-4096:]})
+                    last_emitted = cur
                 # tight Claude-specific limit banner only — NOT the generic regex,
                 # which would match the echoed prompt or Claude discussing limits.
                 if re.search(r"usage limit reached|approaching your usage limit",

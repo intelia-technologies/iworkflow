@@ -873,6 +873,7 @@ class _Executor:
         log(f"COMMAND  {label} → Running: {argv} (cwd={exec_cwd})")
         t_start = time.time()
         timeout = step.timeout_s or 60.0
+        self.runner._emit(label, "dispatch", provider="local", kind="command", cwd=exec_cwd)
 
         if shell:
             proc = await asyncio.create_subprocess_shell(
@@ -891,19 +892,50 @@ class _Executor:
                 env=exec_env,
             )
 
+        stdout_parts: list[bytes] = []
+        stderr_parts: list[bytes] = []
+
+        async def read_stream(stream: asyncio.StreamReader | None, name: str, parts: list[bytes]) -> None:
+            if stream is None:
+                return
+            while True:
+                chunk = await stream.read(4096)
+                if not chunk:
+                    break
+                parts.append(chunk)
+                text = chunk.decode(errors="replace")
+                if text:
+                    self.runner._emit(label, "output", provider="local", stream=name, text=text)
+
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            await asyncio.wait_for(
+                asyncio.gather(
+                    read_stream(proc.stdout, "stdout", stdout_parts),
+                    read_stream(proc.stderr, "stderr", stderr_parts),
+                    proc.wait(),
+                ),
+                timeout=timeout,
+            )
             timed_out = False
         except asyncio.TimeoutError:
             proc.kill()
-            stdout, stderr = await proc.communicate()
+            await proc.wait()
             timed_out = True
+            self.runner._emit(label, "timeout", provider="local", timeout_s=timeout)
 
         duration = time.time() - t_start
         exit_code = 124 if timed_out else proc.returncode
-        stdout_str = stdout.decode(errors="replace")
-        stderr_str = stderr.decode(errors="replace")
+        stdout_str = b"".join(stdout_parts).decode(errors="replace")
+        stderr_str = b"".join(stderr_parts).decode(errors="replace")
 
+        self.runner._emit(
+            label,
+            "done",
+            provider="local",
+            exit_code=exit_code,
+            ms=round(duration * 1000),
+            timeout=timed_out,
+        )
         log(f"DONE     {label} ← exit={exit_code} ({duration:.2f}s)")
         
         value = {

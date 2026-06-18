@@ -1,6 +1,7 @@
 """Declarative workflow engine — deterministic tests (no quota, FakeProvider/Scripted)."""
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,29 @@ def test_agent_step_templates_prompt_and_output(tmp_path):
     assert seen["prompt"] == "solve X"
     assert out["status"] == "DONE"
     assert out["output"] == "answer:solve X"
+
+
+def test_command_step_emits_progress_events(tmp_path):
+    runner, _ = _fake_runner(tmp_path)
+    spec = {
+        "steps": [{
+            "id": "cmd",
+            "kind": "command",
+            "command": "python3 -u -c \"print('one'); print('two')\"",
+        }]
+    }
+
+    out = _run(run_spec(runner, spec, {}))
+
+    assert out["status"] == "DONE"
+    events_path = tmp_path / "runs" / "wf" / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert [e["event"] for e in events] == ["dispatch", "output", "done"]
+    assert events[0]["label"] == "cmd"
+    assert events[0]["provider"] == "local"
+    assert events[1]["stream"] == "stdout"
+    assert "one" in events[1]["text"]
+    assert events[-1]["exit_code"] == 0
 
 
 def test_parallel_fans_out(tmp_path):
