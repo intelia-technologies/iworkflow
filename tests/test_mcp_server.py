@@ -433,6 +433,10 @@ def test_dashboard_server_api_endpoints(tmp_path):
     assert "Actividad del run" in HTML_DASHBOARD
     assert "Mapa del workflow" in HTML_DASHBOARD
     assert "xl:grid-cols" in HTML_DASHBOARD
+    assert "clearStepSelection" in HTML_DASHBOARD
+    assert "openSelectedDetail" in HTML_DASHBOARD
+    assert "Mostrando solo la salida" in HTML_DASHBOARD
+    assert "classDef selected" in HTML_DASHBOARD
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("localhost", 0))
@@ -457,6 +461,8 @@ def test_dashboard_server_api_endpoints(tmp_path):
         assert 'id="run-log"' in html
         assert "Actividad del run" in html
         assert "Mapa del workflow" in html
+        assert "Ver todo" in html
+        assert "Detalle" in html
 
         cfg = json.loads(urllib.request.urlopen(f"{base_url}/api/config").read().decode("utf-8"))
         assert cfg["run_id"] == run_id

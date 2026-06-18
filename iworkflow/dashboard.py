@@ -84,12 +84,18 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         <section class="min-h-0 bg-slate-950 border border-slate-800 rounded-2xl shadow-sm overflow-hidden flex flex-col">
           <div class="px-5 py-4 border-b border-slate-800 flex items-start justify-between gap-4">
             <div>
-              <div class="text-xs uppercase tracking-wider text-slate-400 font-semibold">Actividad del run</div>
-              <div class="text-xs text-slate-500 mt-1">Salida reciente de agentes/comandos y eventos de estado.</div>
+              <div class="text-xs uppercase tracking-wider text-slate-400 font-semibold" id="run-log-title">Actividad del run</div>
+              <div class="text-xs text-slate-500 mt-1" id="run-log-subtitle">Salida reciente de agentes/comandos y eventos de estado.</div>
             </div>
-            <div class="text-right shrink-0">
-              <div class="text-xs font-mono text-slate-500">events.jsonl</div>
-              <div id="latest-output" class="font-mono text-xs text-emerald-300/80 truncate max-w-[300px] mt-1">Esperando eventos...</div>
+            <div class="text-right shrink-0 space-y-2">
+              <div>
+                <div class="text-xs font-mono text-slate-500">events.jsonl</div>
+                <div id="latest-output" class="font-mono text-xs text-emerald-300/80 truncate max-w-[300px] mt-1">Esperando eventos...</div>
+              </div>
+              <div id="selection-actions" class="hidden justify-end gap-2">
+                <button onclick="openSelectedDetail()" class="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-slate-500 hover:text-white">Detalle</button>
+                <button onclick="clearStepSelection()" class="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-slate-500 hover:text-white">Ver todo</button>
+              </div>
             </div>
           </div>
           <div id="run-log" class="flex-1 min-h-[420px] overflow-y-auto p-4 space-y-2 font-mono text-xs text-slate-300">
@@ -177,13 +183,24 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       } else {
         window.setTab('prompt');
       }
+      updateRunLog();
+      updateDrawer();
+    };
+
+    window.openSelectedDetail = function() {
+      if (!selectedStepId) return;
       document.getElementById('drawer').classList.remove('translate-x-full');
       updateDrawer();
     };
 
+    window.clearStepSelection = function() {
+      selectedStepId = null;
+      document.getElementById('drawer').classList.add('translate-x-full');
+      updateRunLog();
+    };
+
     window.closeDrawer = function() {
       document.getElementById('drawer').classList.add('translate-x-full');
-      selectedStepId = null;
     };
 
     window.setTab = function(tab) {
@@ -209,12 +226,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       document.getElementById('dr-kind').innerText = step.kind;
 
       // Extract events for this step
-      const stepEvents = currentData.events.filter(e => {
-        if (e.label === selectedStepId) return true;
-        // Match loop iterations or fanned out agents (e.g. L#0/chat or phase3_context:inspect_code)
-        if (e.label && (e.label.startsWith(selectedStepId + '#') || e.label.includes(':' + selectedStepId))) return true;
-        return false;
-      });
+      const stepEvents = currentData.events.filter(e => eventMatchesStep(e, selectedStepId));
 
       // Determine step status
       let status = 'PENDIENTE';
@@ -276,6 +288,20 @@ HTML_DASHBOARD = """<!DOCTYPE html>
           evContainer.appendChild(div);
         });
       }
+    }
+
+    function eventMatchesStep(ev, stepId) {
+      if (!ev || !ev.label || !stepId) return false;
+      const label = String(ev.label);
+      if (label === stepId) return true;
+      if (label.startsWith(stepId + '#')) return true;
+      if (label.includes(':' + stepId)) return true;
+      if (label.includes('/')) return label.split('/').pop() === stepId;
+      return false;
+    }
+
+    function normalizedStepId(label) {
+      return String(label || '').split('/').pop().split(':').pop().split('#')[0];
     }
 
     function findStepInSpec(stepId) {
@@ -362,7 +388,8 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       code += '\\n\\nclassDef pending fill:#f8fafc,stroke:#cbd5e1,color:#475569';
       code += '\\nclassDef running fill:#eff6ff,stroke:#3b82f6,stroke-width:2.5px,color:#1d4ed8';
       code += '\\nclassDef done fill:#f0fdf4,stroke:#22c55e,color:#15803d';
-      code += '\\nclassDef error fill:#fef2f2,stroke:#ef4444,color:#b91c1c\\n';
+      code += '\\nclassDef error fill:#fef2f2,stroke:#ef4444,color:#b91c1c';
+      code += '\\nclassDef selected fill:#ecfeff,stroke:#06b6d4,stroke-width:3px,color:#0e7490\\n';
 
       // Set class for each node in spec
       function applyClasses(steps) {
@@ -375,6 +402,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         });
       }
       applyClasses(currentData.spec.steps || []);
+      if (selectedStepId) code += `\nclass ${selectedStepId} selected`;
 
       // Render Mermaid graph
       const container = document.getElementById('mermaid-container');
@@ -419,16 +447,30 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     function updateRunLog() {
       const log = document.getElementById('run-log');
       const latest = document.getElementById('latest-output');
-      if (!log || !latest) return;
+      const title = document.getElementById('run-log-title');
+      const subtitle = document.getElementById('run-log-subtitle');
+      const actions = document.getElementById('selection-actions');
+      if (!log || !latest || !title || !subtitle || !actions) return;
 
       log.innerHTML = '';
-      const events = currentData.events.slice(-120);
+      const sourceEvents = selectedStepId
+        ? currentData.events.filter(e => eventMatchesStep(e, selectedStepId))
+        : currentData.events;
+      const events = sourceEvents.slice(-120);
+
+      title.innerText = selectedStepId ? `Actividad: ${selectedStepId}` : 'Actividad del run';
+      subtitle.innerText = selectedStepId
+        ? 'Mostrando solo la salida y eventos del paso seleccionado.'
+        : 'Salida reciente de agentes/comandos y eventos de estado.';
+      actions.classList.toggle('hidden', !selectedStepId);
+      actions.classList.toggle('flex', !!selectedStepId);
+
       if (events.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'text-slate-500 italic';
         empty.innerText = 'Aún no hay eventos.';
         log.appendChild(empty);
-        latest.innerText = 'Esperando eventos...';
+        latest.innerText = selectedStepId ? `${selectedStepId}: sin eventos` : 'Esperando eventos...';
         return;
       }
 
@@ -452,7 +494,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         const label = document.createElement('button');
         label.className = 'text-left text-slate-300 hover:text-white underline-offset-2 hover:underline';
         label.innerText = ev.label || 'run';
-        if (ev.label) label.onclick = () => window.selectStep(ev.label.split(':').pop().split('/').pop().split('#')[0]);
+        if (ev.label) label.onclick = () => window.selectStep(normalizedStepId(ev.label));
 
         const msg = document.createElement('div');
         msg.className = 'whitespace-pre-wrap break-words';
