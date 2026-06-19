@@ -81,6 +81,7 @@ class Runner:
         self.journal_dir = journal_dir
         self.sems = {name: asyncio.Semaphore(caps.get(name, 2)) for name in providers}
         self.caps = caps
+        self.active_pgids = set()
         self.cooldown_s = cooldown_s   # >0: skip a provider for this long after it throttles
         # learn=True: demote providers that have been failing across past ledgers
         self._stats = provider_stats(journal_dir) if learn else {}
@@ -110,6 +111,26 @@ class Runner:
         if done:
             log(f"resume: {len(done)} agent(s) recovered from ledger {self.ledger.path}")
         return done
+
+    def register_pgid(self, pgid: int) -> None:
+        self.active_pgids.add(pgid)
+
+    def unregister_pgid(self, pgid: int) -> None:
+        self.active_pgids.discard(pgid)
+
+    def kill_active_pgids(self) -> None:
+        import os
+        import signal
+        for pgid in list(self.active_pgids):
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, AttributeError):
+                pass
+            self.active_pgids.discard(pgid)
+
+    async def teardown(self) -> None:
+        await self.teardown_tmux()
+        self.kill_active_pgids()
 
     async def teardown_tmux(self) -> None:
         if not self._teardown_tmux_server:
@@ -264,6 +285,14 @@ class Runner:
                                     stream=fields.get("stream", "stdout"),
                                     text=text,
                                 )
+                        elif event == "spawn":
+                            pgid = fields.get("pgid")
+                            if pgid:
+                                self.register_pgid(pgid)
+                        elif event == "reap":
+                            pgid = fields.get("pgid")
+                            if pgid:
+                                self.unregister_pgid(pgid)
 
                     kwargs = {
                         "schema": use_schema,

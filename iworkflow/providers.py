@@ -170,7 +170,12 @@ class Provider:
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
+            start_new_session=True,
         )
+
+        pgid = proc.pid
+        if on_event is not None:
+            on_event("spawn", {"pgid": pgid})
 
         stdout_parts: list[bytes] = []
         stderr_parts: list[bytes] = []
@@ -214,6 +219,7 @@ class Provider:
             if buffer:
                 emit(bytes(buffer))
 
+        timed_out = False
         try:
             await asyncio.wait_for(
                 asyncio.gather(
@@ -225,8 +231,22 @@ class Provider:
                 timeout=self.timeout_s,
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            timed_out = True
+        finally:
+            try:
+                import signal
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, AttributeError):
+                pass
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
             await proc.wait()
+            if on_event is not None:
+                on_event("reap", {"pgid": pgid})
+
+        if timed_out:
             return 124, b"".join(stdout_parts).decode(errors="replace"), "".join([b"".join(stderr_parts).decode(errors="replace"), "timeout"])
         return proc.returncode, b"".join(stdout_parts).decode(errors="replace"), b"".join(stderr_parts).decode(errors="replace")
 

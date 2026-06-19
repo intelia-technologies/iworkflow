@@ -44,6 +44,76 @@ def test_classify_timeout_raises_provider_error():
         Provider._classify(124, "usage limit reached")
 
 
+def test_exec_kills_process_group_on_success(tmp_path):
+    provider = Provider("base")
+
+    # Parent spawns grandchild that sleeps for 10s, writes its PID to a file, then exits 0 instantly
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    code, stdout, stderr = asyncio.run(
+        provider._exec(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                f"import subprocess, sys; proc = subprocess.Popen([sys.executable, \"-c\", \"import time; time.sleep(10)\"]); open(r'{grandchild_pid_file}', 'w').write(str(proc.pid)); sys.stdout.flush()",
+            ],
+            "",
+            cwd=str(tmp_path),
+        )
+    )
+
+    assert code == 0
+    assert stderr == ""
+    assert grandchild_pid_file.exists()
+
+    # Parse grandchild PID and verify it is dead
+    grandchild_pid = int(grandchild_pid_file.read_text())
+    import os
+    import time
+    time.sleep(0.2)
+    try:
+        os.kill(grandchild_pid, 0)
+        alive = True
+    except ProcessLookupError:
+        alive = False
+    assert not alive, f"grandchild process {grandchild_pid} survived parent success exit!"
+
+
+def test_exec_kills_process_group_on_timeout(tmp_path):
+    provider = Provider("base")
+    provider.timeout_s = 1
+
+    # Spawn a grandchild that sleeps, print grandchild pid, then sleep
+    code, stdout, stderr = asyncio.run(
+        provider._exec(
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                "import subprocess, sys, time; proc = subprocess.Popen([sys.executable, \"-c\", \"import time; time.sleep(10)\"]); print(proc.pid); sys.stdout.flush(); time.sleep(10)",
+            ],
+            "",
+            cwd=str(tmp_path),
+        )
+    )
+
+    assert code == 124  # timeout
+    assert "timeout" in stderr
+
+    # Parse grandchild PID and verify it is dead
+    grandchild_pid = int(stdout.strip())
+    import os
+    import time
+    # wait briefly for signal propagation
+    time.sleep(0.2)
+    try:
+        os.kill(grandchild_pid, 0)
+        alive = True
+    except ProcessLookupError:
+        alive = False
+    assert not alive, f"grandchild process {grandchild_pid} survived timeout!"
+
+
 def test_exec_runs_subprocess_in_cwd(tmp_path):
     provider = Provider("base")
 

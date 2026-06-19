@@ -856,7 +856,7 @@ class _Executor:
                 bundle["aborted_at"] = aborted_at
             return bundle
         finally:
-            teardown = getattr(self.runner, "teardown_tmux", None)
+            teardown = getattr(self.runner, "teardown", None)
             if teardown is not None:
                 await teardown()
 
@@ -1146,6 +1146,7 @@ class _Executor:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=exec_cwd,
                 env=exec_env,
+                start_new_session=True,
             )
         else:
             proc = await asyncio.create_subprocess_exec(
@@ -1154,7 +1155,11 @@ class _Executor:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=exec_cwd,
                 env=exec_env,
+                start_new_session=True,
             )
+
+        pgid = proc.pid
+        self.runner.register_pgid(pgid)
 
         stdout_parts: list[bytes] = []
         stderr_parts: list[bytes] = []
@@ -1191,6 +1196,7 @@ class _Executor:
             if buffer:
                 emit(bytes(buffer))
 
+        timed_out = False
         try:
             await asyncio.wait_for(
                 asyncio.gather(
@@ -1200,12 +1206,21 @@ class _Executor:
                 ),
                 timeout=timeout,
             )
-            timed_out = False
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
             timed_out = True
             self.runner._emit(label, "timeout", provider="local", timeout_s=timeout)
+        finally:
+            try:
+                import signal
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, AttributeError):
+                pass
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            self.runner.unregister_pgid(pgid)
 
         duration = time.time() - t_start
         exit_code = 124 if timed_out else proc.returncode

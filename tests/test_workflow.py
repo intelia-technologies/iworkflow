@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,10 @@ class ScriptedProvider(Provider):
         self.last_usage = {"input_tokens": 1, "output_tokens": 5, "cost_usd": None}
         i = self._n
         self._n += 1
-        return self.responder(prompt, schema, i)
+        res = self.responder(prompt, schema, i)
+        if asyncio.iscoroutine(res):
+            res = await res
+        return res
 
 
 def _fake_runner(tmp_path, run_id="wf"):
@@ -923,6 +927,162 @@ def test_required_nested_agent_exhaustion_reports_full_label_and_timeout(tmp_pat
     assert "agent step 'L#0/chat' exhausted" in message
     assert "codex:RATE_LIMITED" in message
     assert "timeout_s=17" in message
+
+
+def test_workflow_abort_kills_in_flight_provider_subprocesses(tmp_path):
+    # A aborts via gate. B is a provider (agent step) running in flight.
+    # B's subprocess and its grandchild should be killed by the runner's backstop.
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    cmd_script = (
+        f"import subprocess, sys, time; "
+        f"proc = subprocess.Popen([sys.executable, \"-c\", \"import time; time.sleep(10)\"]); "
+        f"open(r'{grandchild_pid_file}', 'w').write(str(proc.pid)); "
+        f"sys.stdout.flush(); "
+        f"time.sleep(10)"
+    )
+
+    spec = {
+        "steps": [
+            {
+                "id": "step_a",
+                "kind": "agent",
+                "prefer": ["codex"],
+                "prompt": "abort",
+                "schema": {"type": "object", "required": ["verdict"], "properties": {"verdict": {"type": "string"}}},
+                "gate": {"field": "verdict", "abort_on": "ABORT"}
+            },
+            {
+                "id": "step_b",
+                "kind": "agent",
+                "prefer": ["codex"],
+                "prompt": "run cmd",
+            }
+        ]
+    }
+
+    # Mock provider for step_a to sleep 0.3s and abort
+    async def mock_a(prompt, schema, i):
+        await asyncio.sleep(0.3)
+        return {"verdict": "ABORT"}
+
+    # Mock provider for step_b to run our long-running command script in a subprocess
+    # (so it gets registered in the runner's active_pgids)
+    async def mock_b(prompt, schema, i):
+        provider = Provider("base")
+        await provider._exec([sys.executable, "-c", cmd_script], "", cwd=str(tmp_path))
+        return {"verdict": "DONE"}
+
+    # We define a single ScriptedProvider whose responder routes based on the prompt
+    async def dispatch_responder(prompt, schema, i):
+        if "abort" in prompt:
+            return await mock_a(prompt, schema, i)
+        else:
+            return await mock_b(prompt, schema, i)
+    
+    p_shared = ScriptedProvider("codex", dispatch_responder)
+    runner = Runner("abort-kill-prov", {"codex": p_shared}, {"codex": 2}, journal_dir=str(tmp_path))
+
+    out = _run(run_spec(runner, spec))
+    assert out["status"] == "ABORTED"
+
+    # Verify grandchild is killed by runner teardown
+    import os
+    import time
+    time.sleep(0.5)
+    assert grandchild_pid_file.exists()
+    grandchild_pid = int(grandchild_pid_file.read_text())
+    try:
+        os.kill(grandchild_pid, 0)
+        alive = True
+    except ProcessLookupError:
+        alive = False
+    assert not alive, f"grandchild process {grandchild_pid} survived workflow provider abort!"
+
+
+def test_workflow_abort_kills_in_flight_subprocesses(tmp_path):
+    runner, _ = _fake_runner(tmp_path)
+    
+    # We create a temporary script that B executes. It spawns a grandchild and writes grandchild's PID to a file,
+    # then sleeps forever.
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    cmd_script = (
+        f"import subprocess, sys, time; "
+        f"proc = subprocess.Popen([sys.executable, \"-c\", \"import time; time.sleep(10)\"]); "
+        f"open(r'{grandchild_pid_file}', 'w').write(str(proc.pid)); "
+        f"sys.stdout.flush(); "
+        f"time.sleep(10)"
+    )
+
+    # A aborts via gate. B runs cmd_script.
+    spec = {
+        "steps": [
+            {
+                "id": "batch",
+                "kind": "parallel",
+                "agents": [
+                    {
+                        "id": "step_a",
+                        "prompt": "always abort",
+                        "schema": {"type": "object", "properties": {"verdict": {"type": "string"}}},
+                        "gate": {"field": "verdict", "abort_on": "ABORT"},
+                    },
+                    {
+                        "id": "step_b",
+                        "prompt": "run cmd",
+                        # We hijack B's prompt or mock it. Wait, step_b is an agent in parallel. 
+                        # Wait! A parallel step can only contain agents. 
+                        # But wait, we can just run two top-level steps in our new DAG executor!
+                        # Since they have no dependencies, they will run concurrently as tasks!
+                        # Step A is an agent that aborts via gate.
+                        # Step B is a command step that executes our script.
+                    }
+                ]
+            }
+        ]
+    }
+
+    # Let us write the spec using two top-level steps (no needs) which run concurrently in a batch!
+    spec = {
+        "steps": [
+            {
+                "id": "step_a",
+                "kind": "agent",
+                "prefer": ["codex"],
+                "prompt": "abort",
+                "schema": {"type": "object", "required": ["verdict"], "properties": {"verdict": {"type": "string"}}},
+                "gate": {"field": "verdict", "abort_on": "ABORT"}
+            },
+            {
+                "id": "step_b",
+                "kind": "command",
+                "command": [sys.executable, "-c", cmd_script]
+            }
+        ]
+    }
+
+    # Mock provider for step_a to return abort verdict
+    async def mock_a(prompt, schema, i):
+        await asyncio.sleep(0.3)
+        return {"verdict": "ABORT"}
+    p1 = ScriptedProvider("codex", mock_a)
+    r = Runner("abort-kill", {"codex": p1}, {"codex": 2}, journal_dir=str(tmp_path))
+
+    out = _run(run_spec(r, spec))
+    assert out["status"] == "ABORTED"
+
+    # Verify that step_b and its grandchild are killed
+    import os
+    import time
+    time.sleep(0.5)
+    assert grandchild_pid_file.exists()
+    grandchild_pid = int(grandchild_pid_file.read_text())
+    
+    try:
+        os.kill(grandchild_pid, 0)
+        alive = True
+    except ProcessLookupError:
+        alive = False
+    assert not alive, f"grandchild process {grandchild_pid} survived workflow abort!"
 
 
 def test_optional_agent_exhaustion_can_continue(tmp_path):
