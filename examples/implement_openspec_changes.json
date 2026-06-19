@@ -1,0 +1,216 @@
+{
+  "name": "implement_openspec_changes",
+  "description": "Implementa secuencialmente las 4 OpenSpec changes (issues #5-#8). Secuencial por contención de escritura en workflow.py/scheduler.py; verificación dura con make validate; auditoría independiente con Gemini.",
+  "schemas": {
+    "impl_result": {
+      "type": "object",
+      "required": [
+        "verdict",
+        "summary"
+      ],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "DONE",
+            "BLOCKED"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "files_changed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tests_added": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "review_result": {
+      "type": "object",
+      "required": [
+        "verdict",
+        "summary"
+      ],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "steps": [
+    {
+      "id": "impl_tmux_isolation",
+      "kind": "agent",
+      "prefer": [
+        "gemini",
+        "codex"
+      ],
+      "sandbox": "write",
+      "timeout_s": 1800,
+      "heartbeat_interval_s": 60,
+      "schema": "impl_result",
+      "gate": {
+        "field": "verdict",
+        "abort_on": "BLOCKED"
+      },
+      "required": true,
+      "write_paths": [
+        "iworkflow/providers.py",
+        "iworkflow/scheduler.py",
+        "tests/test_providers.py",
+        "specs/iworkflow.openspec.json",
+        "docs/USING_IWORKFLOW.md",
+        "openspec/changes/tmux-socket-isolation"
+      ],
+      "prompt": "Implementa la OpenSpec change `tmux-socket-isolation` (GitHub issue #5) en el repo iworkflow.\n\nOBJETIVO: Aislar tmux por run: enrutar todo tmux de ClaudeInteractiveProvider a un socket dedicado `tmux -L iw_{run_id}` y matar el servidor de socket al terminar el run.\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/tmux-socket-isolation/proposal.md  (Why / What Changes / Impact)\n- openspec/changes/tmux-socket-isolation/specs/  (requisitos SHALL/MUST + escenarios WHEN/THEN: son tu contrato)\n- openspec/changes/tmux-socket-isolation/tasks.md  (checklist de implementación; marca [x] lo que completes)\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs, nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en el control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS DE LA TAREA:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` debe quedar cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/ (uno por escenario observable).\n3. Actualiza el contrato público specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si el cambio toca la superficie pública.\n4. Reutiliza patrones existentes; NO introduzcas una segunda convención junto a una ya presente. NO dejes shims ni código muerto.\n5. Ejecuta SOLO tus tests nuevos/tocados para smoke local (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes el `make validate` completo: lo corre el paso de verificación del workflow.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; verdict=BLOCKED si falta un prerrequisito real (explícalo en summary)."
+    },
+    {
+      "id": "impl_schema_validation",
+      "kind": "agent",
+      "needs": [
+        "impl_tmux_isolation"
+      ],
+      "prefer": [
+        "gemini",
+        "codex"
+      ],
+      "sandbox": "write",
+      "timeout_s": 1800,
+      "heartbeat_interval_s": 60,
+      "schema": "impl_result",
+      "gate": {
+        "field": "verdict",
+        "abort_on": "BLOCKED"
+      },
+      "required": true,
+      "write_paths": [
+        "iworkflow/workflow.py",
+        "iworkflow/scheduler.py",
+        "iworkflow/minijsonschema.py",
+        "tests/test_workflow.py",
+        "tests/test_scheduler.py",
+        "specs/iworkflow.openspec.json",
+        "docs/USING_IWORKFLOW.md",
+        "openspec/changes/step-schema-validation"
+      ],
+      "prompt": "Implementa la OpenSpec change `step-schema-validation` (GitHub issue #6) en el repo iworkflow.\n\nOBJETIVO: Validación de schema en el motor: cuando AgentSpec.schema esté definido, _exec_agent debe validar res.value completo con minijsonschema.validate antes de marcar DONE; mismatch = fallo de paso (failover/required).\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/step-schema-validation/proposal.md  (Why / What Changes / Impact)\n- openspec/changes/step-schema-validation/specs/  (requisitos SHALL/MUST + escenarios WHEN/THEN: son tu contrato)\n- openspec/changes/step-schema-validation/tasks.md  (checklist de implementación; marca [x] lo que completes)\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs, nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en el control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS DE LA TAREA:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` debe quedar cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/ (uno por escenario observable).\n3. Actualiza el contrato público specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si el cambio toca la superficie pública.\n4. Reutiliza patrones existentes; NO introduzcas una segunda convención junto a una ya presente. NO dejes shims ni código muerto.\n5. Ejecuta SOLO tus tests nuevos/tocados para smoke local (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes el `make validate` completo: lo corre el paso de verificación del workflow.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; verdict=BLOCKED si falta un prerrequisito real (explícalo en summary)."
+    },
+    {
+      "id": "impl_conditional_routing",
+      "kind": "agent",
+      "needs": [
+        "impl_schema_validation"
+      ],
+      "prefer": [
+        "gemini",
+        "codex"
+      ],
+      "sandbox": "write",
+      "timeout_s": 1800,
+      "heartbeat_interval_s": 60,
+      "schema": "impl_result",
+      "gate": {
+        "field": "verdict",
+        "abort_on": "BLOCKED"
+      },
+      "required": true,
+      "write_paths": [
+        "iworkflow/workflow.py",
+        "tests/test_workflow.py",
+        "specs/iworkflow.openspec.json",
+        "docs/USING_IWORKFLOW.md",
+        "openspec/changes/conditional-flow-routing"
+      ],
+      "prompt": "Implementa la OpenSpec change `conditional-flow-routing` (GitHub issue #7) en el repo iworkflow.\n\nOBJETIVO: Aditivo: extender el campo `when` (hoy solo de supervisor) a cualquier paso top-level; el executor lo evalúa con _eval_when antes de despachar y salta el paso de forma determinista (resultado skipped + evento), reutilizando _validate_when/_eval_when intactos.\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/conditional-flow-routing/proposal.md  (Why / What Changes / Impact)\n- openspec/changes/conditional-flow-routing/specs/  (requisitos SHALL/MUST + escenarios WHEN/THEN: son tu contrato)\n- openspec/changes/conditional-flow-routing/tasks.md  (checklist de implementación; marca [x] lo que completes)\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs, nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en el control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS DE LA TAREA:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` debe quedar cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/ (uno por escenario observable).\n3. Actualiza el contrato público specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si el cambio toca la superficie pública.\n4. Reutiliza patrones existentes; NO introduzcas una segunda convención junto a una ya presente. NO dejes shims ni código muerto.\n5. Ejecuta SOLO tus tests nuevos/tocados para smoke local (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes el `make validate` completo: lo corre el paso de verificación del workflow.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; verdict=BLOCKED si falta un prerrequisito real (explícalo en summary)."
+    },
+    {
+      "id": "impl_worktree_isolation",
+      "kind": "agent",
+      "needs": [
+        "impl_conditional_routing"
+      ],
+      "prefer": [
+        "gemini",
+        "codex"
+      ],
+      "sandbox": "write",
+      "timeout_s": 1800,
+      "heartbeat_interval_s": 60,
+      "schema": "impl_result",
+      "gate": {
+        "field": "verdict",
+        "abort_on": "BLOCKED"
+      },
+      "required": true,
+      "write_paths": [
+        "iworkflow/workflow.py",
+        "tests/test_workflow.py",
+        "specs/iworkflow.openspec.json",
+        "docs/USING_IWORKFLOW.md",
+        "openspec/changes/worktree-write-isolation"
+      ],
+      "prompt": "Implementa la OpenSpec change `worktree-write-isolation` (GitHub issue #8) en el repo iworkflow.\n\nOBJETIVO: Aislar escrituras: para agentes write-capable dentro de parallel/pipeline, crear un git worktree por (run_id, step, agent), ejecutar con cwd=worktree, validar write_paths dentro, consolidar a la rama base solo al éxito y limpiar (git worktree remove).\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/worktree-write-isolation/proposal.md  (Why / What Changes / Impact)\n- openspec/changes/worktree-write-isolation/specs/  (requisitos SHALL/MUST + escenarios WHEN/THEN: son tu contrato)\n- openspec/changes/worktree-write-isolation/tasks.md  (checklist de implementación; marca [x] lo que completes)\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs, nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en el control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS DE LA TAREA:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` debe quedar cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/ (uno por escenario observable).\n3. Actualiza el contrato público specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si el cambio toca la superficie pública.\n4. Reutiliza patrones existentes; NO introduzcas una segunda convención junto a una ya presente. NO dejes shims ni código muerto.\n5. Ejecuta SOLO tus tests nuevos/tocados para smoke local (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes el `make validate` completo: lo corre el paso de verificación del workflow.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; verdict=BLOCKED si falta un prerrequisito real (explícalo en summary)."
+    },
+    {
+      "id": "verify",
+      "kind": "command",
+      "needs": [
+        "impl_worktree_isolation"
+      ],
+      "command": "make validate",
+      "timeout_s": 900,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": "non-zero"
+      }
+    },
+    {
+      "id": "review",
+      "kind": "agent",
+      "needs": [
+        "verify"
+      ],
+      "prefer": [
+        "gemini"
+      ],
+      "sandbox": "read-only",
+      "timeout_s": 900,
+      "heartbeat_interval_s": 60,
+      "schema": "review_result",
+      "required": false,
+      "prompt": "Auditoría independiente. Las 4 OpenSpec changes (openspec/changes/) han sido implementadas y `make validate` ha pasado.\nVerifica de forma adversarial que cada requisito SHALL/MUST de cada spec.md tiene cobertura REAL en el código y en los tests (no solo que los tests pasen). Para cada change, confirma que cada `#### Scenario` se corresponde con un test concreto. Reporta verdict=PASS solo si las 4 están completas y fieles a su contrato; verdict=FAIL listando en `issues` cada requisito/escenario sin cubrir."
+    }
+  ],
+  "output": {
+    "tmux": "{{steps.impl_tmux_isolation.value.verdict}}",
+    "schema": "{{steps.impl_schema_validation.value.verdict}}",
+    "conditional": "{{steps.impl_conditional_routing.value.verdict}}",
+    "worktree": "{{steps.impl_worktree_isolation.value.verdict}}",
+    "validate_exit": "{{steps.verify.value.exit_code}}",
+    "review": "{{steps.review.value.verdict}}"
+  }
+}
