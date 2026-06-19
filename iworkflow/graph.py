@@ -111,6 +111,22 @@ def render_agent(step_id: str, agent_spec: dict[str, Any],
     return node_def, step_id, step_id
 
 
+def render_checkpoint(step_id: str, step_spec: dict[str, Any],
+                      ctx: dict[str, Any]) -> tuple[str, str, str]:
+    mode = step_spec.get("mode", "approval")
+    title = step_spec.get("title") or step_spec.get("prompt") or step_id
+    label_lines = [f"<b>{_text(step_id, ctx)}</b> (checkpoint)"]
+    label_lines.append(f"mode: {_text(mode, ctx)}")
+    label_lines.append(f"prompt: {_text(title, ctx)}")
+    if step_spec.get("artifact"):
+        label_lines.append(f"artifact: {_text(step_spec.get('artifact'), ctx)}")
+    if step_spec.get("output"):
+        label_lines.append(f"output: {_text(step_spec.get('output'), ctx)}")
+    label = "<br/>".join(label_lines)
+    node_def = f'    {step_id}{{"{label}"}}'
+    return node_def, step_id, step_id
+
+
 def render_supervisor(step_id: str, step_spec: dict[str, Any],
                       ctx: dict[str, Any]) -> tuple[str, str, str]:
     label_lines = [f"<b>{_text(step_id, ctx)}</b> (supervisor)"]
@@ -235,6 +251,8 @@ def render_step(step: dict[str, Any], ctx: dict[str, Any],
     if kind == "agent":
         agent_spec = step.get("agent") or step
         return render_agent(step_id, agent_spec, ctx)
+    elif kind == "checkpoint":
+        return render_checkpoint(step_id, step, ctx)
     elif kind == "supervisor":
         return render_supervisor(step_id, step, ctx)
     elif kind == "parallel":

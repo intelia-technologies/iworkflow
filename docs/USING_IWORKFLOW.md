@@ -100,14 +100,16 @@ while True:
   )
   after = chunk["next_after"]
   # handle chunk["events"] …
-  if chunk["status"] in {"done", "error", "unknown_done", "failed_to_start", "not_found"}:
+  if chunk["status"] in {"done", "paused", "aborted", "error", "unknown_done", "failed_to_start", "not_found"}:
     break
 ```
 
-Terminal stream statuses are `done`, `error`, `unknown_done`, `failed_to_start`,
-and `not_found`. Finished aggregate bundles are persisted to `result.json`, so a
-reconnected MCP process can return `done` with `result` from disk. `unknown_done`
-means only per-agent events are present and no aggregate `result.json` exists.
+Terminal stream statuses are `done`, `paused`, `aborted`, `error`, `unknown_done`,
+`failed_to_start`, and `not_found`. Finished aggregate bundles are persisted to
+`result.json`, so a reconnected MCP process can return `done` or `paused` with
+`result` from disk. `paused` means a `checkpoint` is waiting for human input and
+`pending_input` tells the operator what to review/write. `unknown_done` means only
+per-agent events are present and no aggregate `result.json` exists.
 `failed_to_start` usually means the run directory was created but no event could
 be written; `not_found` means no run directory exists for that `run_id` in the
 selected or remembered `journal_dir`.
@@ -151,10 +153,11 @@ providers. This is what the test suite and `examples/` use.
 
 The result of a run is a **bundle**:
 ```jsonc
-{ "status": "DONE" | "ABORTED",
+{ "status": "DONE" | "PAUSED" | "ABORTED",
   "name": "<recipe or null>",
   "output": <rendered spec.output>,
   "steps": { "<step_id>": <that step's value>, … },
+  "pending_input": { "step_id": "gate", "prompt": "…", "output": "/path/decision.json" }, // only when PAUSED
   "aborted_at": "<step_id>"   // only when ABORTED
 }
 ```
@@ -186,6 +189,7 @@ artifact paths resolve against workflow `cwd`.
 | `loop` | repeat a `body` until a stop condition | `body:[…]`, `until`, `max_iterations` (required), `collect?`, `when?` |
 | `supervisor` | a coordinator inspects state and **adapts the remaining plan** | `prompt`, `watch?`, `when?` |
 | `command` | one local subprocess | `command`, `cwd?`, `env?`, `timeout_s?`, `gate?`, `when?` |
+| `checkpoint` | human-in-the-loop gate; pauses until a JSON resolution exists or an interactive resolver answers | `prompt`, `output`, `mode?`, `schema?`, `artifact?`, `when?` |
 
 ### Templating
 Prompts (and most string fields) render against the run context:
@@ -199,7 +203,7 @@ A string that is **exactly** one `{{token}}` resolves to the raw object (so
 `"items": "{{loop.collected}}"` stays a list); otherwise tokens stringify inline.
 
 ### Conditional Routing — `when`
-Any top-level `agent`, `parallel`, `pipeline`, `loop`, or `command` step can include
+Any top-level `agent`, `parallel`, `pipeline`, `loop`, `command`, or `checkpoint` step can include
 `when`. The runner evaluates it deterministically against the accumulated context
 before dispatching the step. If the predicate is false, no provider, CLI, or
 subprocess runs; the step is journaled as `{"skipped": true, "ok": true, "kind": ...}`,
@@ -252,6 +256,35 @@ a sub-path to each element when the path resolves to a list; combine predicates 
 - `required` defaults to `true`; if all preferred providers fail/exhaust, a sequential
   agent fails the workflow instead of feeding `null` into downstream prompts. Use
   `required:false` only for explicit best-effort/degraded steps.
+
+### `checkpoint` — human gate / PAUSED resume
+```jsonc
+{ "id": "draft_gate", "kind": "checkpoint", "needs": ["render"],
+  "mode": "input",
+  "prompt": "Review render/email.html. Approve, edit variables, or abort.",
+  "artifact": "{{steps.render.value.email_html}}",
+  "schema": { "type": "object", "required": ["approved"],
+              "properties": { "approved": { "type": "boolean" }, "notes": {} } },
+  "output": ".iworkflow/runs/{{params.run_id}}/draft_decision.json" }
+```
+- Unattended mode (default): if `output` does not exist or does not validate, the
+  run returns `status:"PAUSED"`, persists `result.json`, emits `checkpoint_pending`,
+  and does **not** execute dependent steps. Write/fix the JSON file and relaunch the
+  same `run_id`; completed prior steps are journaled and the workflow resumes at the
+  checkpoint.
+- Attended mode: `iworkflow run --interactive …` installs a terminal resolver. The
+  resolver returns the human decision inline; iworkflow validates it, writes `output`,
+  and continues in the same process. SDK callers can pass `Runner(...,
+  checkpoint_resolver=callable)`.
+- `mode:"input"` requires `schema`; the resolution must validate before advancing.
+  Invalid JSON/schema mismatches keep the run paused with `pending_input.validation_error`.
+- `mode:"confirm"` advances only on an explicit affirmative value (`{"approved": true}`
+  or `"go"`/`"yes"`). Ambiguous or negative answers are not a go.
+
+This maps supervised workflows such as `review-client-v4`: Gate 1 writes
+`decisions.json` before task/document writes, Gate 2 approves or edits
+`render/variables.json` before draft creation, and Gate 3 requires an explicit send
+confirmation before `email.send_draft`.
 
 ### `parallel` — fan-out barrier
 ```jsonc
@@ -407,7 +440,7 @@ Defaults (widen explicitly only from a trusted CLI/SDK caller via `Limits(...)`)
 
 Per run under `.iworkflow/runs/<run_id>/`:
 - `events.jsonl` — full structured trace (`route`/`dispatch`/`done`/`limited`/`error`/
-  `cooling`/`schema_mismatch`/`exhausted`/`resumed`).
+  `cooling`/`schema_mismatch`/`exhausted`/`resumed`/`checkpoint_pending`).
 - `ledger.jsonl` — durable per-agent record (also drives resume): provider, attempts,
   prompt/schema hashes, `schema_ok`, timing, `kind`, `tools`, input/output tokens,
   cost.

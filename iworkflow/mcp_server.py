@@ -90,6 +90,7 @@ def _default_runner(
     learn: bool = True,
     catalog: ToolCatalog | None = None,
     journal_dir: str = ".iworkflow",
+    checkpoint_resolver: Any | None = None,
 ) -> Runner:
     caps = caps or {"codex": 2, "gemini": 2, "claude": 1, "cursor": 2}
     providers = {
@@ -107,6 +108,7 @@ def _default_runner(
         learn=learn,
         catalog=catalog,
         default_cwd=cwd,
+        checkpoint_resolver=checkpoint_resolver,
     )
 
 
@@ -168,6 +170,17 @@ def _load_result(run_id: str, journal_dir: str) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _status_from_result(result: dict[str, Any]) -> str:
+    status = result.get("status")
+    if status == "PAUSED":
+        return "paused"
+    if status == "ABORTED":
+        return "aborted"
+    if status == "ERROR":
+        return "error"
+    return "done"
 
 
 def _run_index_path(index_journal_dir: str = ".iworkflow") -> Path:
@@ -279,7 +292,8 @@ def _workflow_status(
         if not task.done():
             return "running", None, None
         try:
-            return "done", task.result(), None
+            result = task.result()
+            return _status_from_result(result), result, None
         except Exception as e:  # noqa: BLE001
             return "error", None, str(e)
 
@@ -290,7 +304,7 @@ def _workflow_status(
 
     persisted = _load_result(run_id, journal_dir)
     if persisted is not None:
-        return "done", persisted, None
+        return _status_from_result(persisted), persisted, None
 
     events = _tail_events(run_id, journal_dir, limit=5)
 
@@ -299,6 +313,8 @@ def _workflow_status(
         last = events[-1]
         if last.get("event") == "error":
             return "error", None, last.get("error")
+        if last.get("event") == "checkpoint_pending":
+            return "paused", {"status": "PAUSED", "pending_input": last}, None
         if last.get("event") in {"done", "exhausted"}:
             return "unknown_done", None, (
                 "in-process task gone; re-run workflow_start or inspect ledger"
@@ -325,7 +341,8 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
                        catalog_root: str | None = None,
                        journal_dir: str = ".iworkflow",
                        allow_tools: bool = True,
-                       preflight_checked: bool = False) -> dict[str, Any]:
+                       preflight_checked: bool = False,
+                       checkpoint_resolver: Any | None = None) -> dict[str, Any]:
     """Run a subscription-only multi-agent workflow. Three ways to drive it:
 
     - `spec=`     : a declarative workflow spec (define your own — DYNAMIC door).
@@ -361,7 +378,10 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
         rid, cwd=effective_cwd, timeout_s=timeout_s, caps=caps,
         catalog=_resolve_catalog(catalog_root, effective_cwd),
         journal_dir=resolved_journal_dir,
+        checkpoint_resolver=checkpoint_resolver,
     )
+    if runner is not None and checkpoint_resolver is not None:
+        runner.checkpoint_resolver = checkpoint_resolver
     limits = Limits(
         allow_tools=allow_tools,
         allowed_sandboxes=frozenset({"read-only", "write"})
@@ -451,7 +471,7 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
         # Cache outcome in process history before removing the task
         try:
             res = t.result()
-            _jobs_history[rid] = {"status": "done", "result": res, "error": None}
+            _jobs_history[rid] = {"status": _status_from_result(res), "result": res, "error": None}
         except Exception as e:
             _jobs_history[rid] = {"status": "error", "result": None, "error": str(e)}
 
@@ -478,6 +498,8 @@ async def workflow_poll(run_id: str, journal_dir: str = ".iworkflow", cwd: str |
     }
     if result is not None:
         payload["result"] = result
+        if status == "paused" and isinstance(result, dict) and "pending_input" in result:
+            payload["pending_input"] = result["pending_input"]
     if hint:
         payload["hint"] = hint
     if status == "error":
@@ -510,7 +532,7 @@ async def workflow_stream(
         )
         events.extend(batch)
         status, result, hint = _workflow_status(run_id, journal_dir)
-        terminal = status in {"done", "error", "unknown_done", "failed_to_start", "not_found"}
+        terminal = status in {"done", "paused", "aborted", "error", "unknown_done", "failed_to_start", "not_found"}
         if events or terminal or block_s <= 0 or time.time() >= deadline:
             break
         await asyncio.sleep(0.25)
@@ -525,6 +547,8 @@ async def workflow_stream(
     }
     if result is not None:
         payload["result"] = result
+        if status == "paused" and isinstance(result, dict) and "pending_input" in result:
+            payload["pending_input"] = result["pending_input"]
     if hint:
         payload["hint"] = hint
     if status == "error":

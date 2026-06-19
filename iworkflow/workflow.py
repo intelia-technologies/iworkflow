@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .scheduler import AgentResult, Runner, log
+from .minijsonschema import validate as validate_json_schema
 
 # Schemas reused by built-in recipes + available to any spec by name. A spec can
 # also inline a JSON Schema dict instead of a name.
@@ -399,7 +400,7 @@ class Until:
 @dataclass
 class Step:
     id: str
-    kind: str                       # agent | parallel | pipeline | loop | supervisor | command
+    kind: str                       # agent | parallel | pipeline | loop | supervisor | command | checkpoint
     needs: list[str] = field(default_factory=list)
     agent: AgentSpec | None = None             # kind == agent
     agents: list[AgentSpec] = field(default_factory=list)   # kind == parallel
@@ -417,6 +418,7 @@ class Step:
     env: dict[str, str] | None = None                       # kind == command
     timeout_s: int | None = None                            # kind == command
     gate: dict[str, Any] | None = None                      # kind == command
+    checkpoint: dict[str, Any] | None = None                # kind == checkpoint
 
 
 @dataclass
@@ -454,8 +456,9 @@ class WorkflowSpec:
         )
 
 
-_VALID_KINDS = {"agent", "parallel", "pipeline", "loop", "supervisor", "command"}
+_VALID_KINDS = {"agent", "parallel", "pipeline", "loop", "supervisor", "command", "checkpoint"}
 _VALID_UNTIL = {"times", "count", "dry", "budget", "agent", "vote"}
+_VALID_CHECKPOINT_MODES = {"approval", "input", "confirm"}
 
 
 def _parse_agent(d: dict[str, Any], fallback_id: str, limits: Limits) -> AgentSpec:
@@ -612,6 +615,36 @@ def _parse_step(d: dict[str, Any], seen: set[str], *, top: bool,
         step.env = d.get("env")
         step.timeout_s = d.get("timeout_s")
         step.gate = d.get("gate")
+    elif kind == "checkpoint":
+        mode = d.get("mode", "approval")
+        if mode not in _VALID_CHECKPOINT_MODES:
+            raise WorkflowError(
+                f"checkpoint step {sid!r}: mode must be one of {sorted(_VALID_CHECKPOINT_MODES)}")
+        title = d.get("title")
+        prompt = d.get("prompt", title)
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise WorkflowError(f"checkpoint step {sid!r} needs a non-empty prompt or title")
+        if title is not None and not isinstance(title, str):
+            raise WorkflowError(f"checkpoint step {sid!r}: title must be a string")
+        artifact = d.get("artifact")
+        if artifact is not None and not isinstance(artifact, str):
+            raise WorkflowError(f"checkpoint step {sid!r}: artifact must be a string path")
+        output = d.get("output")
+        if not isinstance(output, str) or not output.strip():
+            raise WorkflowError(f"checkpoint step {sid!r} needs a non-empty output path")
+        schema = d.get("schema")
+        if mode == "input" and schema is None:
+            raise WorkflowError(f"checkpoint step {sid!r} with mode='input' needs a schema")
+        if schema is not None and not isinstance(schema, (str, dict)):
+            raise WorkflowError(f"checkpoint step {sid!r}: schema must be a name or object")
+        step.checkpoint = {
+            "mode": mode,
+            "title": title or prompt,
+            "prompt": prompt,
+            "artifact": artifact,
+            "schema": schema,
+            "output": output,
+        }
     when = d.get("when")
     if top and when is not None:
         _validate_when(when)
@@ -638,6 +671,12 @@ async def run_spec(runner: Runner, spec: dict[str, Any],
 class _Abort(Exception):
     def __init__(self, step_id: str) -> None:
         self.step_id = step_id
+
+
+class _Pause(Exception):
+    def __init__(self, step_id: str, request: dict[str, Any]) -> None:
+        self.step_id = step_id
+        self.request = request
 
 
 def check_preflight(
@@ -775,7 +814,7 @@ class _Executor:
                     ignore_paths=[self.runner.journal_dir],
                 )
 
-            status, aborted_at = "DONE", None
+            status, aborted_at, pending_input = "DONE", None, None
             try:
                 i = 0
                 while i < len(self.plan):
@@ -826,8 +865,17 @@ class _Executor:
                                 t.cancel()
                             await asyncio.gather(*pending, return_exceptions=True)
 
+                        first_exc: BaseException | None = None
                         for t in done:
-                            t.result()
+                            try:
+                                t.result()
+                            except BaseException as e:  # noqa: BLE001 - propagate after draining siblings
+                                if first_exc is None or (
+                                    isinstance(first_exc, _Pause) and not isinstance(e, _Pause)
+                                ):
+                                    first_exc = e
+                        if first_exc is not None:
+                            raise first_exc
 
                     if i < len(self.plan) and self.plan[i].kind == "supervisor":
                         step = self.plan[i]
@@ -843,6 +891,8 @@ class _Executor:
                         i += 1
             except _Abort as a:
                 status, aborted_at = "ABORTED", a.step_id
+            except _Pause as p:
+                status, pending_input = "PAUSED", p.request
             out = render(self.wf.output, self.ctx) if self.wf.output is not None else None
             if status == "DONE":
                 self._validate_artifacts()
@@ -854,6 +904,8 @@ class _Executor:
             }
             if aborted_at:
                 bundle["aborted_at"] = aborted_at
+            if pending_input is not None:
+                bundle["pending_input"] = pending_input
             return bundle
         finally:
             teardown = getattr(self.runner, "teardown", None)
@@ -1099,6 +1151,8 @@ class _Executor:
             return await self._exec_agent(step, ctx, label)
         if step.kind == "command":
             return await self._exec_command(step, ctx, label)
+        if step.kind == "checkpoint":
+            return await self._exec_checkpoint(step, ctx, label)
         if step.kind == "parallel":
             return await self._exec_parallel(step, ctx, label)
         if step.kind == "pipeline":
@@ -1107,6 +1161,165 @@ class _Executor:
             return await self._exec_loop(step, ctx, label)
         # supervisor is top-level only (run() handles it); anything else is a bug.
         raise WorkflowError(f"cannot execute step kind {step.kind!r} here")
+
+    def _checkpoint_path(self, raw: Any, ctx: dict[str, Any]) -> Path | None:
+        rendered = render(raw, ctx)
+        if not isinstance(rendered, str) or not rendered.strip():
+            return None
+        path = Path(rendered)
+        if not path.is_absolute():
+            path = Path(self.runner.default_cwd or os.getcwd()) / path
+        return path
+
+    def _checkpoint_request(
+        self,
+        step: Step,
+        ctx: dict[str, Any],
+        *,
+        validation_error: str | None = None,
+    ) -> dict[str, Any]:
+        cp = step.checkpoint or {}
+        schema_ref = cp.get("schema")
+        request: dict[str, Any] = {
+            "step_id": step.id,
+            "mode": cp.get("mode", "approval"),
+            "title": render(cp.get("title"), ctx),
+            "prompt": render(cp.get("prompt"), ctx),
+            "artifact": None,
+            "schema": self._schema(schema_ref),
+            "output": None,
+        }
+        if isinstance(schema_ref, str):
+            request["schema_name"] = schema_ref
+        artifact_path = self._checkpoint_path(cp.get("artifact"), ctx) if cp.get("artifact") else None
+        if artifact_path is not None:
+            request["artifact"] = str(artifact_path)
+        output_path = self._checkpoint_path(cp.get("output"), ctx)
+        if output_path is not None:
+            request["output"] = str(output_path)
+        if validation_error:
+            request["validation_error"] = validation_error
+        return request
+
+    def _load_checkpoint_output(self, path: Path) -> tuple[bool, Any, str | None]:
+        try:
+            return True, json.loads(path.read_text(encoding="utf-8")), None
+        except OSError as e:
+            return False, None, f"cannot read output {path}: {e}"
+        except json.JSONDecodeError as e:
+            return False, None, f"checkpoint output {path} is not valid JSON: {e}"
+
+    def _validate_checkpoint_resolution(
+        self,
+        step: Step,
+        value: Any,
+    ) -> tuple[bool, str | None]:
+        cp = step.checkpoint or {}
+        schema = self._schema(cp.get("schema"))
+        if schema is not None:
+            ok, why = validate_json_schema(value, schema)
+            if not ok:
+                return False, why
+        if cp.get("mode") == "confirm" and not self._is_explicit_confirmation(value):
+            return False, "confirm checkpoint requires explicit affirmative resolution"
+        return True, None
+
+    @staticmethod
+    def _is_explicit_confirmation(value: Any) -> bool:
+        if value is True:
+            return True
+        if isinstance(value, str):
+            return value.strip().lower() in {
+                "approve", "approved", "go", "send", "yes", "y", "si", "sí",
+                "envia", "envía", "envialo", "envíalo",
+            }
+        if not isinstance(value, dict):
+            return False
+        for key in ("approved", "approve", "confirmed", "confirm", "go", "send"):
+            if value.get(key) is True:
+                return True
+        decision = value.get("decision", value.get("action", value.get("status")))
+        if isinstance(decision, str):
+            return decision.strip().lower() in {
+                "approve", "approved", "go", "send", "yes", "y", "si", "sí",
+                "envia", "envía", "envialo", "envíalo",
+            }
+        return False
+
+    def _write_checkpoint_output(self, path: Path, value: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(value, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+
+    def _pause_checkpoint(
+        self,
+        step: Step,
+        ctx: dict[str, Any],
+        *,
+        validation_error: str | None = None,
+    ) -> None:
+        request = self._checkpoint_request(step, ctx, validation_error=validation_error)
+        self.runner._emit(step.id, "checkpoint_pending", **request)
+        log(f"PAUSED   {step.id}: waiting for human checkpoint resolution")
+        raise _Pause(step.id, request)
+
+    async def _exec_checkpoint(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
+        cp = step.checkpoint
+        assert cp is not None
+        output_path = self._checkpoint_path(cp.get("output"), ctx)
+
+        if output_path is not None and output_path.exists():
+            ok, value, why = self._load_checkpoint_output(output_path)
+            if not ok:
+                self._pause_checkpoint(step, ctx, validation_error=why)
+            valid, validation_error = self._validate_checkpoint_resolution(step, value)
+            if not valid:
+                self._pause_checkpoint(step, ctx, validation_error=validation_error)
+            self.runner._emit(
+                label,
+                "done",
+                provider="human",
+                kind="checkpoint",
+                mode=cp.get("mode", "approval"),
+                output=str(output_path),
+            )
+            return {
+                "kind": "checkpoint",
+                "value": value,
+                "ok": True,
+                "mode": cp.get("mode", "approval"),
+                "output": str(output_path),
+            }
+
+        resolver = getattr(self.runner, "checkpoint_resolver", None)
+        if resolver is None:
+            self._pause_checkpoint(step, ctx)
+
+        request = self._checkpoint_request(step, ctx)
+        value = resolver(request)
+        if asyncio.iscoroutine(value):
+            value = await value
+        valid, validation_error = self._validate_checkpoint_resolution(step, value)
+        if not valid:
+            self._pause_checkpoint(step, ctx, validation_error=validation_error)
+        if output_path is not None:
+            self._write_checkpoint_output(output_path, value)
+        self.runner._emit(
+            label,
+            "done",
+            provider="human",
+            kind="checkpoint",
+            mode=cp.get("mode", "approval"),
+            output=str(output_path) if output_path is not None else None,
+        )
+        return {
+            "kind": "checkpoint",
+            "value": value,
+            "ok": True,
+            "mode": cp.get("mode", "approval"),
+            "output": str(output_path) if output_path is not None else None,
+        }
 
     async def _exec_command(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
         import time

@@ -67,7 +67,8 @@ class Runner:
                  caps: dict[str, int], journal_dir: str = ".iworkflow",
                  cooldown_s: float = 0.0, learn: bool = False,
                  catalog: ToolCatalog | None = None,
-                 default_cwd: str | None = None):
+                 default_cwd: str | None = None,
+                 checkpoint_resolver: Callable[[dict[str, Any]], Any | Awaitable[Any]] | None = None):
         self.run_id = run_id
         self.providers = providers
         self._tmux_socket = f"iw_{run_id}"
@@ -78,6 +79,7 @@ class Runner:
                 self._teardown_tmux_server = True
         self.catalog = catalog
         self.default_cwd = default_cwd
+        self.checkpoint_resolver = checkpoint_resolver
         self.journal_dir = journal_dir
         self.sems = {name: asyncio.Semaphore(caps.get(name, 2)) for name in providers}
         self.caps = caps

@@ -32,6 +32,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     .node.running rect { fill: #eff6ff !important; stroke: #3b82f6 !important; stroke-width: 3px !important; stroke-dasharray: 5, 5 !important; }
     .node.done rect { fill: #f0fdf4 !important; stroke: #22c55e !important; stroke-width: 2px !important; }
     .node.error rect { fill: #fef2f2 !important; stroke: #ef4444 !important; stroke-width: 2px !important; }
+    .node.paused rect { fill: #fefce8 !important; stroke: #eab308 !important; stroke-width: 3px !important; }
   </style>
 </head>
 <body class="h-full flex flex-col overflow-hidden text-slate-800">
@@ -235,6 +236,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       let provider = 'N/A';
       
       const doneEv = stepEvents.find(e => e.event === 'done');
+      const pausedEv = stepEvents.find(e => e.event === 'checkpoint_pending');
       const errorEv = stepEvents.find(e => e.event === 'error' || e.event === 'exhausted' || e.event === 'timeout');
       const dispatchEv = stepEvents.find(e => e.event === 'dispatch');
 
@@ -244,6 +246,9 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       } else if (errorEv) {
         status = 'ERROR';
         provider = errorEv.provider || 'N/A';
+      } else if (pausedEv) {
+        status = 'PAUSADO';
+        provider = 'human';
       } else if (dispatchEv) {
         status = 'EJECUTÁNDOSE';
         provider = dispatchEv.provider || 'N/A';
@@ -254,6 +259,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       statusEl.className = 'text-sm font-bold uppercase mt-0.5 ' + 
         (status === 'COMPLETADO' ? 'text-emerald-600' : 
          status === 'ERROR' ? 'text-red-600' : 
+         status === 'PAUSADO' ? 'text-yellow-600' :
          status === 'EJECUTÁNDOSE' ? 'text-blue-600 animate-pulse' : 'text-slate-500');
 
       document.getElementById('dr-provider').innerText = provider;
@@ -376,8 +382,10 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         if (stepId.includes('/')) stepId = stepId.split('/').pop();
         if (stepId.includes(':')) stepId = stepId.split(':').pop();
 
-        if (e.event === 'dispatch' || e.event === 'output' || e.event === 'heartbeat') {
-          if (stepStates[stepId] !== 'done' && stepStates[stepId] !== 'error') stepStates[stepId] = 'running';
+        if (e.event === 'checkpoint_pending') {
+          if (stepStates[stepId] !== 'done' && stepStates[stepId] !== 'error') stepStates[stepId] = 'paused';
+        } else if (e.event === 'dispatch' || e.event === 'output' || e.event === 'heartbeat') {
+          if (stepStates[stepId] !== 'done' && stepStates[stepId] !== 'error' && stepStates[stepId] !== 'paused') stepStates[stepId] = 'running';
         } else if (e.event === 'done') {
           stepStates[stepId] = 'done';
         } else if (e.event === 'error' || e.event === 'exhausted' || e.event === 'timeout') {
@@ -391,6 +399,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       code += '\\nclassDef running fill:#eff6ff,stroke:#3b82f6,stroke-width:2.5px,color:#1d4ed8';
       code += '\\nclassDef done fill:#f0fdf4,stroke:#22c55e,color:#15803d';
       code += '\\nclassDef error fill:#fef2f2,stroke:#ef4444,color:#b91c1c';
+      code += '\nclassDef paused fill:#fefce8,stroke:#eab308,stroke-width:2.5px,color:#854d0e';
       code += '\\nclassDef selected fill:#ecfeff,stroke:#06b6d4,stroke-width:3px,color:#0e7490\\n';
 
       // Set class for each node in spec
@@ -423,13 +432,16 @@ HTML_DASHBOARD = """<!DOCTYPE html>
       } else {
         const states = Object.values(stepStates);
         if (states.includes('error')) status = 'ERROR';
+        else if (states.includes('paused')) status = 'PAUSED';
         else if (states.length && currentData.spec.steps.every(s => stepStates[s.id] === 'done')) status = 'DONE';
         else if (states.includes('running')) status = 'RUNNING';
       }
       const statusEl = document.getElementById('hdr-status');
       statusEl.innerText = status;
       statusEl.className = 'text-sm font-semibold uppercase tracking-wider ' + 
-        (status === 'DONE' ? 'text-emerald-400' : status === 'ERROR' ? 'text-red-400' : 'text-blue-400 animate-pulse');
+        (status === 'DONE' ? 'text-emerald-400' :
+         status === 'ERROR' ? 'text-red-400' :
+         status === 'PAUSED' ? 'text-yellow-300' : 'text-blue-400 animate-pulse');
 
       // 2. Duration
       const firstEv = currentData.events[0];
@@ -605,6 +617,10 @@ HTML_DASHBOARD = """<!DOCTYPE html>
           : '';
         return {kind: 'done', text: `done${ev.ms ? ` in ${ev.ms}ms` : ''}${ev.exit_code !== undefined ? ` exit=${ev.exit_code}` : ''}${tokens}`};
       }
+      if (ev.event === 'checkpoint_pending') {
+        const detail = ev.validation_error ? ` · ${ev.validation_error}` : '';
+        return {kind: 'paused', text: `waiting for human input${detail}`};
+      }
       if (ev.event === 'timeout') return {kind: 'error', text: `timeout${ev.timeout_s ? ` after ${ev.timeout_s}s` : ''}`};
       return {kind: 'meta', text: ev.event.toUpperCase()};
     }
@@ -667,6 +683,7 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         row.className = 'grid min-w-0 grid-cols-[92px_minmax(110px,150px)_minmax(0,1fr)] gap-3 items-start border-l-2 pl-3 py-1 ' +
           (ev.event === 'done' ? 'border-emerald-500 text-emerald-100' :
            ev.event === 'error' || ev.event === 'timeout' || ev.event === 'exhausted' ? 'border-red-500 text-red-100' :
+           ev.event === 'checkpoint_pending' ? 'border-yellow-500 text-yellow-100' :
            ev.event === 'dispatch' ? 'border-blue-500 text-blue-100' : 'border-slate-700');
 
         const time = document.createElement('div');

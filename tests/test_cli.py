@@ -214,12 +214,19 @@ def test_cli_run_forwards_allow_tools(monkeypatch, tmp_path):
     main(["run", "--spec", str(spec_file)])
     assert len(calls) == 1
     assert calls[0].get("allow_tools") is True
+    assert calls[0].get("checkpoint_resolver") is None
 
     # 2) --deny-tools should set allow_tools=False
     calls.clear()
     main(["run", "--spec", str(spec_file), "--deny-tools"])
     assert len(calls) == 1
     assert calls[0].get("allow_tools") is False
+
+    # 3) --interactive wires a checkpoint resolver into run_workflow
+    calls.clear()
+    main(["run", "--spec", str(spec_file), "--interactive"])
+    assert len(calls) == 1
+    assert callable(calls[0].get("checkpoint_resolver"))
 
 
 def test_cli_run_generates_unique_run_id_by_default(tmp_path, capsys, monkeypatch):

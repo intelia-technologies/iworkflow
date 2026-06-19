@@ -726,6 +726,71 @@
           "additionalProperties": false
         },
         {
+          "title": "checkpoint",
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "prompt",
+            "output"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "checkpoint"
+            },
+            "needs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "when": {
+              "description": "Optional conditional routing guard evaluated before dispatch.",
+              "$ref": "#/types/When"
+            },
+            "title": {
+              "type": "string",
+              "description": "Short human-readable checkpoint title."
+            },
+            "prompt": {
+              "type": "string",
+              "description": "Prompt shown to the human reviewer."
+            },
+            "artifact": {
+              "type": "string",
+              "description": "Optional rendered file path to review."
+            },
+            "schema": {
+              "description": "Expected resolution schema: name or inline JSON Schema.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/types/JsonSchema"
+                }
+              ]
+            },
+            "output": {
+              "type": "string",
+              "description": "JSON file path used for unattended resume."
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "approval",
+                "input",
+                "confirm"
+              ],
+              "default": "approval"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
           "title": "command",
           "type": "object",
           "required": [
@@ -921,6 +986,7 @@
           "enum": [
             "DONE",
             "ABORTED",
+            "PAUSED",
             "ERROR"
           ]
         },
@@ -948,12 +1014,73 @@
             "string",
             "null"
           ]
+        },
+        "pending_input": {
+          "$ref": "#/types/PendingInput"
         }
       },
       "required": [
         "status",
         "steps"
       ],
+      "additionalProperties": true
+    },
+    "PendingInput": {
+      "type": "object",
+      "description": "Human checkpoint request emitted when a workflow pauses for input.",
+      "required": [
+        "step_id",
+        "mode",
+        "prompt",
+        "output"
+      ],
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "approval",
+            "input",
+            "confirm"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "artifact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema": {
+          "oneOf": [
+            {
+              "$ref": "#/types/JsonSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schema_name": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "validation_error": {
+          "type": "string"
+        }
+      },
       "additionalProperties": true
     }
   },
@@ -995,6 +1122,17 @@
         "On successful write-capable completion, the executor stages and commits worktree changes, applies git merge --squash from the base cwd, commits staged base changes with git commit --no-edit, and returns the agent result only after consolidation.",
         "The executor removes isolated worktrees with git worktree remove --force in a finally block for success, provider failure, validation failure, and exceptions.",
         "If the base cwd is not inside a git repository, a write-capable parallel or pipeline agent fails before any provider call with a descriptive WorkflowError."
+      ]
+    },
+    "interactive-gates": {
+      "summary": "Human-in-the-loop checkpoints with PAUSED resume-safe execution.",
+      "description": "Checkpoint steps pause unattended runs with a pending_input payload, resume deterministically from a validated output JSON file, or resolve inline through an injected interactive resolver. Confirm checkpoints require explicit affirmative approval.",
+      "requirements": [
+        "A checkpoint step without a valid resolution pauses the workflow with status PAUSED and emits checkpoint_pending.",
+        "A checkpoint output file is JSON-decoded and validated against schema before the step completes.",
+        "Invalid or ambiguous checkpoint resolution keeps the run paused and does not execute dependent steps.",
+        "An injected interactive resolver may return a valid resolution inline; the engine persists it to output and continues without relaunching.",
+        "mode=confirm advances only on an explicit affirmative value such as {\"approved\": true} or \"go\"."
       ]
     }
   },

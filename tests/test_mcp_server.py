@@ -106,6 +106,35 @@ def test_run_workflow_persists_aggregate_result_for_reconnect(tmp_path):
     assert loaded == result
 
 
+def test_run_workflow_persists_paused_result_for_reconnect(tmp_path):
+    decision_path = tmp_path / "decision.json"
+    runner = Runner(
+        "paused-result",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+    )
+    spec = {"steps": [{
+        "id": "gate",
+        "kind": "checkpoint",
+        "prompt": "Approve?",
+        "output": str(decision_path),
+    }]}
+
+    result = asyncio.run(run_workflow(
+        spec=spec, runner=runner, run_id="paused-result", journal_dir=str(tmp_path)
+    ))
+    status, loaded, hint = _workflow_status("paused-result", str(tmp_path))
+    poll = asyncio.run(workflow_poll("paused-result", journal_dir=str(tmp_path)))
+
+    assert result["status"] == "PAUSED"
+    assert status == "paused"
+    assert hint is None
+    assert loaded == result
+    assert poll["status"] == "paused"
+    assert poll["pending_input"]["step_id"] == "gate"
+
+
 def test_poll_follows_remembered_journal_dir_after_reconnect(tmp_path, monkeypatch):
     server_root = tmp_path / "server"
     repo = tmp_path / "repo"
@@ -453,6 +482,8 @@ def test_dashboard_server_api_endpoints(tmp_path):
     assert "msg.dataset.kind = 'prompt'" in HTML_DASHBOARD
     assert "providerLogo" in HTML_DASHBOARD
     assert "providerModelForEvent" in HTML_DASHBOARD
+    assert "checkpoint_pending" in HTML_DASHBOARD
+    assert "classDef paused" in HTML_DASHBOARD
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("localhost", 0))

@@ -178,6 +178,9 @@ def print_run_status(recipe_name: str | None = None,
         elif evt in ("done", "resumed"):
             status_text = "\033[32mDONE\033[0m" if evt == "done" else "\033[36mRESUMED\033[0m"
             return "✔", f"{status_text}{meta}"
+        elif evt == "checkpoint_pending":
+            detail = last.get("validation_error") or last.get("title") or "waiting for human input"
+            return "⏸", f"\033[35mPAUSED\033[0m: {detail}"
         elif evt == "error":
             return "✘", f"\033[31mERROR\033[0m{meta}: {last.get('error')}"
         elif evt == "limited":

@@ -107,6 +107,161 @@ def test_command_step_emits_progress_events(tmp_path):
     assert events[-1]["exit_code"] == 0
 
 
+def test_checkpoint_parse_requires_schema_for_input_mode(tmp_path):
+    valid = WorkflowSpec.parse({"steps": [{
+        "id": "gate",
+        "kind": "checkpoint",
+        "mode": "input",
+        "prompt": "Review decisions",
+        "schema": {"type": "object", "required": ["approved"], "properties": {"approved": {}}},
+        "output": str(tmp_path / "decision.json"),
+    }]})
+    assert valid.steps[0].kind == "checkpoint"
+
+    with pytest.raises(WorkflowError, match="schema"):
+        WorkflowSpec.parse({"steps": [{
+            "id": "gate",
+            "kind": "checkpoint",
+            "mode": "input",
+            "prompt": "Review decisions",
+            "output": str(tmp_path / "decision.json"),
+        }]})
+
+
+def test_checkpoint_unattended_pauses_and_emits_pending_event(tmp_path):
+    decision_path = tmp_path / "decision.json"
+    runner, _ = _fake_runner(tmp_path, run_id="checkpoint-pause")
+    spec = {"steps": [
+        {"id": "gate", "kind": "checkpoint", "prompt": "Approve?", "output": str(decision_path)},
+        {"id": "after", "kind": "command", "needs": ["gate"],
+         "command": ["python3", "-c", "print('after')"]},
+    ]}
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "PAUSED"
+    assert out["pending_input"]["step_id"] == "gate"
+    assert out["pending_input"]["output"] == str(decision_path)
+    assert "after" not in out["steps"]
+    events_path = tmp_path / "runs" / "checkpoint-pause" / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert events[-1]["event"] == "checkpoint_pending"
+    assert events[-1]["label"] == "gate"
+
+
+def test_checkpoint_resume_from_valid_output_file(tmp_path):
+    decision_path = tmp_path / "decision.json"
+    spec = {"steps": [
+        {"id": "gate", "kind": "checkpoint", "mode": "input", "prompt": "Approve?",
+         "schema": {"type": "object", "required": ["approved"],
+                    "properties": {"approved": {}}},
+         "output": str(decision_path)},
+        {"id": "after", "kind": "command", "needs": ["gate"],
+         "command": ["python3", "-c", "print('after')"]},
+    ]}
+
+    first_runner, _ = _fake_runner(tmp_path, run_id="checkpoint-resume")
+    first = _run(run_spec(first_runner, spec))
+    assert first["status"] == "PAUSED"
+
+    decision_path.write_text(json.dumps({"approved": True}), encoding="utf-8")
+    second_runner, _ = _fake_runner(tmp_path, run_id="checkpoint-resume")
+    second = _run(run_spec(second_runner, spec))
+
+    assert second["status"] == "DONE"
+    assert second["steps"]["gate"] == {"approved": True}
+    assert second["steps"]["after"]["exit_code"] == 0
+    steps = json.loads((tmp_path / "runs" / "checkpoint-resume" / "wf-steps.json")
+                       .read_text(encoding="utf-8"))
+    assert steps["gate"]["value"] == {"approved": True}
+
+
+def test_checkpoint_invalid_schema_stays_paused(tmp_path):
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(json.dumps({"wrong": True}), encoding="utf-8")
+    runner, _ = _fake_runner(tmp_path, run_id="checkpoint-invalid")
+    spec = {"steps": [
+        {"id": "gate", "kind": "checkpoint", "mode": "input", "prompt": "Approve?",
+         "schema": {"type": "object", "required": ["approved"],
+                    "additionalProperties": False, "properties": {"approved": {}}},
+         "output": str(decision_path)},
+        {"id": "after", "kind": "command", "needs": ["gate"],
+         "command": ["python3", "-c", "print('after')"]},
+    ]}
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "PAUSED"
+    assert "validation_error" in out["pending_input"]
+    assert "after" not in out["steps"]
+
+
+def test_checkpoint_interactive_resolver_completes_inline(tmp_path):
+    decision_path = tmp_path / "decision.json"
+    seen = {}
+
+    def resolver(request):
+        seen.update(request)
+        return {"approved": True}
+
+    runner = Runner(
+        "checkpoint-interactive",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+        checkpoint_resolver=resolver,
+    )
+    spec = {"steps": [
+        {"id": "gate", "kind": "checkpoint", "mode": "input", "prompt": "Approve?",
+         "schema": {"type": "object", "required": ["approved"],
+                    "properties": {"approved": {}}},
+         "output": str(decision_path)},
+        {"id": "after", "kind": "command", "needs": ["gate"],
+         "command": ["python3", "-c", "print('after')"]},
+    ]}
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert seen["step_id"] == "gate"
+    assert json.loads(decision_path.read_text(encoding="utf-8")) == {"approved": True}
+    assert out["steps"]["after"]["exit_code"] == 0
+
+
+def test_checkpoint_confirm_requires_explicit_affirmative(tmp_path):
+    decision_path = tmp_path / "confirm.json"
+    spec = {"steps": [
+        {"id": "send_gate", "kind": "checkpoint", "mode": "confirm",
+         "prompt": "Send email?", "output": str(decision_path)},
+        {"id": "send", "kind": "command", "needs": ["send_gate"],
+         "command": ["python3", "-c", "print('sent')"]},
+    ]}
+
+    negative_runner = Runner(
+        "checkpoint-confirm",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+        checkpoint_resolver=lambda request: {"approved": False},
+    )
+    negative = _run(run_spec(negative_runner, spec))
+    assert negative["status"] == "PAUSED"
+    assert "send" not in negative["steps"]
+    assert not decision_path.exists()
+
+    positive_runner = Runner(
+        "checkpoint-confirm",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+        checkpoint_resolver=lambda request: {"approved": True},
+    )
+    positive = _run(run_spec(positive_runner, spec))
+    assert positive["status"] == "DONE"
+    assert positive["steps"]["send_gate"] == {"approved": True}
+    assert positive["steps"]["send"]["exit_code"] == 0
+
+
 def test_top_level_when_parse_accepts_agent_and_leaves_missing_parallel_unchanged():
     when = {"path": "steps.gate.value.ok", "truthy": True}
     wf = WorkflowSpec.parse({"steps": [
