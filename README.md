@@ -97,7 +97,10 @@ domain-agnostic. See `examples/review_client_v4.json` for a host recipe using
 three native checkpoints to model the supervised weekly client review flow.
 
 **Dynamic specs** — *define your own* workflow as **data** (safe to pass across MCP,
-where a Python closure can't go). A spec is a list of `steps`, each one of:
+where a Python closure can't go). See `docs/USING_IWORKFLOW.md#authoring-helper--how-an-agent-should-design-an-iworkflow`
+for the recipe-authoring checklist: deterministic spine first, provider/model
+routing, timeouts, caps, gates, checkpoints, artifacts, and validation. A spec is a
+list of `steps`, each one of:
 
 | kind | runs |
 |---|---|

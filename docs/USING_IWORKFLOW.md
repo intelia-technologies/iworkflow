@@ -190,6 +190,132 @@ and Gate 3 confirms send before `email.send_draft`. All fail-loud scripts have
 `gate.abort_on:["non-zero"]`; a failed packet/validator/render/send step aborts
 instead of letting downstream writes run on bad artifacts.
 
+## Authoring helper — how an agent should design an iworkflow
+
+Use this checklist when asking an agent to create a workflow or recipe. The goal is
+not "put agents in a row"; the goal is a deterministic program that spends
+subscription workers only where judgment is needed.
+
+### 1) Decide whether iworkflow is the right tool
+
+Use iworkflow when the task has at least one of: gate → fan-out, broad independent
+review/build work, staged per-item processing, loop-until-complete, durable resume,
+provider failover, or a human approval checkpoint. Do **not** use it for one local
+edit, a purely deterministic script, or an exploratory conversation with no bounded
+work list.
+
+### 2) Build the deterministic spine first
+
+Before adding any `agent` step, identify deterministic inputs, scripts, validators,
+artifact paths, and final outputs.
+
+- Use `command` for parsing, sharding, compilation, tests, renderers, validators,
+  file moves, exports, and API/MCP calls that are already deterministic.
+- Every fail-loud `command` that protects downstream work must include:
+  `"gate": {"field":"exit_code", "abort_on":["non-zero"]}`.
+  `needs` is ordering-only; a non-zero command without a gate still satisfies its
+  dependents.
+- Pin paths up front with `params.run_id` / `params.run_dir`; do not parse important
+  paths out of stdout.
+- Declare `artifacts` for required final files/dirs, so a `DONE` run proves they
+  exist.
+
+### 3) Choose topology by data shape and contention
+
+| Shape | Use | Rule |
+|---|---|---|
+| One risky prerequisite | `agent`/`command` + `gate` | Abort before spending fan-out work. |
+| Independent work over known items | `parallel` | Maximize fan-out; read-only preferred. |
+| Per-item staged work | `pipeline` | Use when each item must pass multiple stages. |
+| Unknown completeness under a cap | `loop` | Always set `max_iterations` and a real stop condition. |
+| Dynamic plan adjustment | `supervisor` | Use after fixed evidence exists; do not let it replace deterministic routing. |
+| Human must decide/review | `checkpoint` | Use for irreversible writes, sends, approvals, or business exceptions. |
+
+Prefer `gate -> fan -> reconcile`. If steps write files, isolate them with
+`write_paths`; parallel writers need disjoint paths or worktree isolation.
+
+### 4) Route provider/model by task complexity
+
+Always set a useful `role`, and set `prefer` when the task has a clear best worker.
+Default policy:
+
+| Task | Provider order | Why |
+|---|---|---|
+| Structured extraction / code edits / schema output | `codex`, then `claude` | Codex has native structured output; good doer. |
+| Long-context corpus sweep / adversarial audit / qualitative review | `gemini`, then `codex` | Gemini is strongest for broad schema-less sweeps. |
+| Delicate synthesis / interactive or high-risk core | `claude`, then `codex` | Reserve scarce Claude for judgment-heavy cores. |
+| Final adversarial verification | `gemini`, then `codex` | Independent reviewer; often schema-less to preserve nuance. |
+
+Use `schema` for doers whose output drives control flow. Let auditors be
+schema-less when nuance matters, then have a deterministic command or a structured
+reconciler consume their report. Never use a paid provider API or make `claude -p`
+the default worker.
+
+### 5) Size timeouts, heartbeats, caps, and subscription pressure
+
+Before a live run, inspect availability:
+
+```bash
+iworkflow sessions --json     # which CLIs are logged in / ready
+iworkflow models --json       # provider defaults and configured models
+```
+
+Then set `caps` for the run conservatively from ready subscriptions (for example
+`{"codex":2,"gemini":1}`), and rely on failover/resume when a provider throttles.
+Do not set fan-out wider than the subscription state can sustain.
+
+Suggested per-step defaults:
+
+| Step | `timeout_s` | `heartbeat_interval_s` |
+|---|---:|---:|
+| Small deterministic command | 60-180 | n/a |
+| Build/test/render/export command | 300-900 | n/a |
+| Small structured agent | 180-300 | 60 |
+| Medium coding/extraction agent | 600-900 | 30-60 |
+| Long-context sweep or synthesis | 1200-2400 | 30-60 |
+| Human `checkpoint` | no worker timeout; resumes from `output` | n/a |
+
+Long tasks need explicit `timeout_s`; loops need explicit `max_iterations`; live
+provider tasks should emit heartbeats often enough that dashboards show progress.
+
+### 6) Add review gates at the right boundary
+
+- **Internal agent gate** (`gate` on an `agent`) when a worker can decide the result
+  is blocked or unsafe (`verdict: BLOCKED`).
+- **Deterministic command gate** when a validator, test, preflight, or script failure
+  must stop downstream writes.
+- **Human checkpoint** when the user/business must approve exceptions, drafts,
+  destructive writes, sends, or anything legally/financially consequential.
+- **Adversarial audit step** when the task is complex and a single doer is likely to
+  miss edge cases. Prefer an independent provider from the doer.
+
+### 7) Validate before handing it back
+
+For every new workflow/recipe:
+
+1. Parse it with `WorkflowSpec.parse` under the right `Limits`.
+2. Render graph with `iworkflow graph ...`; Mermaid must validate before printing.
+3. Add a `FakeProvider` or parser regression test for routing/gates/artifacts.
+4. Run targeted tests; run full validation for engine changes.
+5. If it is a host recipe, install it under `.iworkflow/recipes/<name>.json` only
+   after the generic example/spec passes in this repo.
+
+### Copy/paste instruction for an agent
+
+```text
+Create an iworkflow recipe for <goal>. First identify deterministic scripts,
+validators, artifacts, inputs, and irreversible boundaries. Use deterministic
+`command` steps for anything that does not require model judgment, with
+`gate.abort_on:["non-zero"]` on fail-loud commands. Use agents only for judgment,
+extraction, synthesis, or audits; give every agent a role, schema when its output
+controls flow, `prefer` based on provider strengths, `timeout_s`, and heartbeat.
+Maximize safe parallelism, but keep writers isolated with `write_paths`. Inspect
+subscription readiness (`iworkflow sessions --json`) before choosing caps/fan-out.
+Use internal gates for uncertain agent results, deterministic gates for validators,
+and `checkpoint` for human/business approval. Pin `run_id`/`run_dir`; declare final
+artifacts; validate parse + graph + targeted tests before returning.
+```
+
 ## Writing a dynamic spec
 
 A spec is `{ name?, description?, params?, schemas?, output?, artifacts?, steps:[…] }`.
