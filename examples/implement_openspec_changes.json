@@ -4,9 +4,11 @@
   "schemas": {
     "impl_result": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "verdict",
-        "summary"
+        "summary",
+        "files_changed"
       ],
       "properties": {
         "verdict": {
@@ -24,21 +26,16 @@
           "items": {
             "type": "string"
           }
-        },
-        "tests_added": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
         }
-      },
-      "additionalProperties": true
+      }
     },
     "review_result": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "verdict",
-        "summary"
+        "summary",
+        "issues"
       ],
       "properties": {
         "verdict": {
@@ -57,8 +54,7 @@
             "type": "string"
           }
         }
-      },
-      "additionalProperties": true
+      }
     }
   },
   "steps": [
@@ -66,8 +62,7 @@
       "id": "impl_tmux_isolation",
       "kind": "agent",
       "prefer": [
-        "codex",
-        "gemini"
+        "codex"
       ],
       "sandbox": "write",
       "timeout_s": 1800,
@@ -91,8 +86,7 @@
       "id": "impl_schema_validation",
       "kind": "agent",
       "prefer": [
-        "codex",
-        "gemini"
+        "codex"
       ],
       "sandbox": "write",
       "timeout_s": 1800,
@@ -119,8 +113,7 @@
       "id": "impl_conditional_routing",
       "kind": "agent",
       "prefer": [
-        "codex",
-        "gemini"
+        "codex"
       ],
       "sandbox": "write",
       "timeout_s": 1800,
@@ -147,8 +140,7 @@
       "id": "impl_worktree_isolation",
       "kind": "agent",
       "prefer": [
-        "codex",
-        "gemini"
+        "codex"
       ],
       "sandbox": "write",
       "timeout_s": 1800,
@@ -191,7 +183,6 @@
         "verify"
       ],
       "prefer": [
-        "gemini",
         "codex"
       ],
       "sandbox": "read-only",
