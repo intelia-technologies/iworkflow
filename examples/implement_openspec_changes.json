@@ -79,9 +79,8 @@
       },
       "required": true,
       "write_paths": [
-        "iworkflow/providers.py",
-        "iworkflow/scheduler.py",
-        "tests/test_providers.py",
+        "iworkflow",
+        "tests",
         "specs/iworkflow.openspec.json",
         "docs/USING_IWORKFLOW.md",
         "openspec/changes/tmux-socket-isolation"
@@ -108,11 +107,8 @@
       },
       "required": true,
       "write_paths": [
-        "iworkflow/workflow.py",
-        "iworkflow/scheduler.py",
-        "iworkflow/minijsonschema.py",
-        "tests/test_workflow.py",
-        "tests/test_scheduler.py",
+        "iworkflow",
+        "tests",
         "specs/iworkflow.openspec.json",
         "docs/USING_IWORKFLOW.md",
         "openspec/changes/step-schema-validation"
@@ -139,8 +135,8 @@
       },
       "required": true,
       "write_paths": [
-        "iworkflow/workflow.py",
-        "tests/test_workflow.py",
+        "iworkflow",
+        "tests",
         "specs/iworkflow.openspec.json",
         "docs/USING_IWORKFLOW.md",
         "openspec/changes/conditional-flow-routing"
@@ -167,8 +163,8 @@
       },
       "required": true,
       "write_paths": [
-        "iworkflow/workflow.py",
-        "tests/test_workflow.py",
+        "iworkflow",
+        "tests",
         "specs/iworkflow.openspec.json",
         "docs/USING_IWORKFLOW.md",
         "openspec/changes/worktree-write-isolation"
