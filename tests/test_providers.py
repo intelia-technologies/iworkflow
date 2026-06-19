@@ -185,6 +185,38 @@ def test_exec_does_not_split_long_jsonl_events(tmp_path):
     assert output_events == [json.dumps(payload) + "\n"]
 
 
+def test_claude_interactive_passes_model_flag(tmp_path, monkeypatch):
+    async def fast_sleep(_seconds):
+        return None
+    monkeypatch.setattr("iworkflow.providers.asyncio.sleep", fast_sleep)
+
+    class RecordingClaudeInteractiveProvider(ClaudeInteractiveProvider):
+        def __init__(self):
+            super().__init__("claude", timeout_s=1, poll_s=0.01)
+            self.commands = []
+            self.pane_calls = 0
+
+        async def _tmux(self, *args):
+            self.commands.append(args)
+            return ""
+
+        async def _pane(self, session):
+            self.pane_calls += 1
+            if self.pane_calls <= 2:
+                return "Claude Max plan mode"
+            return "Claude Max plan mode\n⏺\n  response"
+
+    provider = RecordingClaudeInteractiveProvider()
+
+    result = asyncio.run(
+        provider.run("say hello", schema=None, sandbox="read-only", model="opus")
+    )
+
+    new_session = next(command for command in provider.commands if command[0] == "new-session")
+    assert result == "response"
+    assert "--model opus" in new_session[-1]
+
+
 def test_claude_interactive_starts_tmux_session_in_cwd(tmp_path, monkeypatch):
     cwd = tmp_path / "repo with spaces"
     cwd.mkdir()

@@ -690,6 +690,8 @@ class ClaudeInteractiveProvider(Provider):
         await self._tmux("kill-session", "-t", session)
         try:
             command = "claude --strict-mcp-config --setting-sources user"
+            if model:
+                command += f" --model {model}"
             if self.permission_mode:
                 command += f" --permission-mode {self.permission_mode}"
             # tmux's native -c sets the session's start dir (robuster than `cd &&`)
