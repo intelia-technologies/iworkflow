@@ -39,7 +39,7 @@ PROVIDER_MODELS: dict[str, dict[str, Any]] = {
         "models": {
             "opus": {
                 "label": "Claude Opus",
-                "aliases": ["claude-opus-4-6"],
+                "aliases": ["claude-opus-4-8"],
                 "notes": "Deep reasoning; scarce weekly quota",
             },
             "sonnet": {
