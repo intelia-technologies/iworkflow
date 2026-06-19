@@ -41,6 +41,7 @@ A dynamic spec that proves useful can be saved as a named recipe (`.iworkflow/re
 The widest surface (full toolbelt: `run`, `workflows`, `stats`, `catalog`, `register`).
 ```bash
 iworkflow workflows                       # list recipes + their params
+iworkflow authoring                       # checklist for agents designing a recipe
 iworkflow run review --params '{"topic":"the scheduler","subject_a":"…","subject_b":"…"}'
 iworkflow run --spec my_spec.json --params '{"q":"…"}' --run-id job1
 iworkflow stats --run-id job1             # telemetry from past runs
@@ -192,9 +193,11 @@ instead of letting downstream writes run on bad artifacts.
 
 ## Authoring helper — how an agent should design an iworkflow
 
-Use this checklist when asking an agent to create a workflow or recipe. The goal is
-not "put agents in a row"; the goal is a deterministic program that spends
-subscription workers only where judgment is needed.
+Use this checklist when asking an agent to create a workflow or recipe. The same
+checklist is discoverable from the CLI via `iworkflow authoring`, so CLI-only
+agents can self-serve the criteria. The goal is not "put agents in a row"; the
+goal is a deterministic program that spends subscription workers only where
+judgment is needed.
 
 ### 1) Decide whether iworkflow is the right tool
 

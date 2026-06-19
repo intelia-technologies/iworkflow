@@ -161,6 +161,25 @@ def test_cmd_graph_mermaid(capsys):
     assert "subgraph fan [" in captured.out
 
 
+def test_cmd_authoring_guide(capsys):
+    main(["authoring"])
+    out = capsys.readouterr().out
+    assert "iworkflow authoring guide" in out
+    assert "Deterministic spine first" in out
+    assert "gate: {field: exit_code, abort_on: [non-zero]}" in out
+    assert "iworkflow sessions --json" in out
+    assert "checkpoint for human/business approval" in out
+
+
+def test_main_help_mentions_authoring(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "authoring" in out
+    assert "Create recipes with: iworkflow authoring" in out
+
+
 def test_cmd_graph_default_writes_html_tempfile(capsys, monkeypatch):
     # The default (no flags) must NOT dump a raw ```mermaid fence to stdout:
     # terminals/agent TUIs that auto-render mermaid can hang on cyclic graphs.

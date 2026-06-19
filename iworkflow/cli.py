@@ -214,6 +214,65 @@ def _cmd_workflows(recipe_dir: str | None) -> None:
         print(f"  {'':16} params: {params}")
 
 
+AUTHORING_GUIDE = """iworkflow authoring guide
+
+Purpose
+  Build a deterministic program over agents. Spend workers only where judgment is needed.
+
+Use iworkflow when
+  - gate -> fan-out, broad independent work, staged per-item work, loops, resume,
+    provider failover, or human approval checkpoints matter.
+  - Do not use it for one local edit, a pure script, or unbounded brainstorming.
+
+Design order
+  1. Deterministic spine first: inputs, run_id/run_dir, scripts, validators, artifacts.
+  2. command for deterministic work; every fail-loud command needs:
+       gate: {field: exit_code, abort_on: [non-zero]}
+     needs is ordering-only; non-zero without gate still lets dependents run.
+  3. Agents only for judgment/extraction/synthesis/audit. Give each agent role,
+     prefer, timeout_s, heartbeat_interval_s, schema when output controls flow.
+  4. Maximize safe parallelism: parallel for independent work, pipeline for staged
+     per-item work, loop only with max_iterations and a real stop condition.
+  5. Protect writes: sandbox/write agents need write_paths; parallel writers need
+     disjoint paths or worktree isolation.
+  6. Gates: agent gate for BLOCKED/unsafe verdicts; command gate for validators;
+     checkpoint for human/business approval or irreversible actions.
+  7. Validate: WorkflowSpec.parse, iworkflow graph, FakeProvider/parser tests, then
+     targeted/full validation.
+
+Provider routing
+  - codex -> structured doers, code edits, schema output. Prefer [codex, claude].
+  - gemini -> long-context sweeps, adversarial audits, qualitative reviews. Prefer [gemini, codex].
+  - claude -> delicate synthesis / high-risk core / interactive driver. Reserve it; never default to metered claude -p.
+
+Sizing
+  - Before live fan-out: iworkflow sessions --json; iworkflow models --json.
+  - Set caps from ready subscriptions, e.g. --caps '{"codex":2,"gemini":1}'.
+  - Small command: 60-180s. Build/test/render/export: 300-900s.
+  - Small agent: 180-300s heartbeat 60s. Medium: 600-900s heartbeat 30-60s.
+  - Long sweep/synthesis: 1200-2400s heartbeat 30-60s.
+
+Copy/paste instruction
+  Create an iworkflow recipe for <goal>. First identify deterministic scripts,
+  validators, artifacts, inputs, and irreversible boundaries. Use deterministic
+  command steps for anything that does not require model judgment, with
+  gate.abort_on:[non-zero] on fail-loud commands. Use agents only for judgment,
+  extraction, synthesis, or audits; give every agent a role, schema when its output
+  controls flow, prefer based on provider strengths, timeout_s, and heartbeat.
+  Maximize safe parallelism, but keep writers isolated with write_paths. Inspect
+  subscription readiness (iworkflow sessions --json) before choosing caps/fan-out.
+  Use internal gates for uncertain agent results, deterministic gates for validators,
+  and checkpoint for human/business approval. Pin run_id/run_dir; declare final
+  artifacts; validate parse + graph + targeted tests before returning.
+
+Full docs: docs/USING_IWORKFLOW.md#authoring-helper--how-an-agent-should-design-an-iworkflow
+"""
+
+
+def _cmd_authoring() -> None:
+    print(AUTHORING_GUIDE)
+
+
 def _default_cli_run_id() -> str:
     """Return a unique run id for one CLI invocation.
 
@@ -441,6 +500,7 @@ def main(argv: list[str] | None = None) -> None:
                     "Environment Note: If importing iworkflow in Python scripts,\n"
                     "run using: 'uv run python script.py'.\n"
                     "Local CLI/MCP runs have 'read-only' and 'write' sandboxes enabled by default.",
+        epilog="Create recipes with: iworkflow authoring",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -463,6 +523,8 @@ def main(argv: list[str] | None = None) -> None:
     p_wf = sub.add_parser("workflows", help="list predefined workflow recipes")
     p_wf.add_argument("--recipe-dir", default=None,
                       help="extra dir of host *.json recipes (default .iworkflow/recipes)")
+
+    sub.add_parser("authoring", help="print the checklist for designing an iworkflow recipe")
 
     p_run = sub.add_parser("run", help="run a recipe by name, --goal, or a --spec file")
     p_run.add_argument("name", nargs="?", default=None, help="recipe name (omit if --spec/--goal)")
@@ -526,6 +588,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_catalog(args.root)
     elif args.cmd == "workflows":
         _cmd_workflows(args.recipe_dir)
+    elif args.cmd == "authoring":
+        _cmd_authoring()
     elif args.cmd == "run":
         _cmd_run(args.name, args.goal, args.params, args.spec, args.run_id, args.recipe_dir, args.cwd, args.timeout, args.caps, args.journal_dir, args.allow_tools, args.skip_preflight, args.interactive)
     elif args.cmd == "stats":
