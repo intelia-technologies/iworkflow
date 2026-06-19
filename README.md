@@ -93,7 +93,8 @@ Built-ins: `fan_synthesize`, `review` (gate→fan→audit), `roadmap`, `deep_rev
 (an agent-decided loop), `adaptive_review` (a supervisor that injects a deep audit
 only when the reviews surface issues). A host project drops its own `*.json` specs into
 `.iworkflow/recipes/` and they appear alongside the built-ins — iworkflow stays
-domain-agnostic.
+domain-agnostic. See `examples/review_client_v4.json` for a host recipe using
+three native checkpoints to model the supervised weekly client review flow.
 
 **Dynamic specs** — *define your own* workflow as **data** (safe to pass across MCP,
 where a Python closure can't go). A spec is a list of `steps`, each one of:

@@ -726,6 +726,26 @@ def test_complex_security_audit_recipe_parses():
     parsed = WorkflowSpec.parse(spec)
     assert parsed.name == "complex_security_audit"
     assert len(parsed.steps) == 5
+
+
+def test_review_client_v4_example_recipe_parses():
+    spec = json.loads(Path("examples/review_client_v4.json").read_text(encoding="utf-8"))
+    parsed = WorkflowSpec.parse(
+        spec,
+        Limits(allowed_sandboxes=frozenset({"read-only", "write"})),
+    )
+
+    assert parsed.name == "review-client-v4"
+    assert [step.id for step in parsed.steps if step.kind == "checkpoint"] == [
+        "gate1_triage_decisions",
+        "gate2_draft_approval",
+        "gate3_send_confirmation",
+    ]
+    for step in spec["steps"]:
+        if step["kind"] == "command":
+            assert step.get("gate") == {"field": "exit_code", "abort_on": ["non-zero"]}
+            assert "--serve" not in json.dumps(step["command"])
+
 def test_get_unknown_recipe_raises():
     with pytest.raises(KeyError):
         get_recipe("nope")
@@ -1687,7 +1707,28 @@ def test_command_step_gate_aborts_on_failure(tmp_path):
     }
     out = _run(run_spec(runner, spec))
     assert out["status"] == "ABORTED"
-    assert out["aborted_at"] == "run_fail" 
+    assert out["aborted_at"] == "run_fail"
+
+
+def test_command_step_gate_aborts_on_any_nonzero(tmp_path):
+    runner, _ = _fake_runner(tmp_path)
+    spec = {
+        "steps": [{
+            "id": "run_fail",
+            "kind": "command",
+            "command": ["python3", "-c", "raise SystemExit(7)"],
+            "gate": {"field": "exit_code", "abort_on": ["non-zero"]},
+        }, {
+            "id": "after",
+            "kind": "command",
+            "needs": ["run_fail"],
+            "command": ["python3", "-c", "print('should not run')"],
+        }]
+    }
+    out = _run(run_spec(runner, spec))
+    assert out["status"] == "ABORTED"
+    assert out["aborted_at"] == "run_fail"
+    assert "after" not in out["steps"]
 
 
 def test_preflight_ignores_iworkflow_journal_dir(tmp_path):

@@ -172,6 +172,24 @@ The result of a run is a **bundle**:
 | `deep_review` | loop: find new issues until a critic says complete (capped) | `subject` |
 | `adaptive_review` | gate → fan reviews → **supervisor injects a deep audit only on ISSUES** | `topic`, `subject_a`, `subject_b` |
 
+## Example host recipes
+
+`examples/review_client_v4.json` is a host-project recipe template for the
+`review-client-v4` weekly review flow. Install it in the client repo as
+`.iworkflow/recipes/review-client-v4.json` and run from that repo with explicit
+`run_id` + `run_dir` so every script sees deterministic paths:
+
+```bash
+iworkflow run review-client-v4 \
+  --params '{"team":"notarbot","run_id":"run-2026-06-19-notarbot-weekly","run_dir":".intelia/weekly-review/notarbot/run-2026-06-19-notarbot-weekly","date_from":"2026-06-12","subject":"Revisión semanal","to":"cliente@example.com","cc":"gestoria@example.com,pablo@inteliatech.ai,jaime@inteliatech.ai","summary_file":".intelia/weekly-review/notarbot/run-2026-06-19-notarbot-weekly/summary.txt"}'
+```
+
+The recipe uses exactly three native `checkpoint` gates: Gate 1 writes
+`decisions.json`, Gate 2 confirms the rendered draft before Gmail draft creation,
+and Gate 3 confirms send before `email.send_draft`. All fail-loud scripts have
+`gate.abort_on:["non-zero"]`; a failed packet/validator/render/send step aborts
+instead of letting downstream writes run on bad artifacts.
+
 ## Writing a dynamic spec
 
 A spec is `{ name?, description?, params?, schemas?, output?, artifacts?, steps:[…] }`.

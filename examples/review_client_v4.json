@@ -1,0 +1,468 @@
+{
+  "name": "review-client-v4",
+  "description": "Supervised weekly client review v4: deterministic scripts build/apply/finalize artifacts; agents only annotate/compose; checkpoints enforce the three human gates before writes, draft creation, and send.",
+  "params": {
+    "team_flag": "--team",
+    "team": null,
+    "env": "prod",
+    "run_id": null,
+    "run_dir": null,
+    "date_from": null,
+    "subject": null,
+    "to": null,
+    "cc": null,
+    "summary_file": null
+  },
+  "schemas": {
+    "decisions_artifact": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "decisions",
+        "constraint_decisions"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "decisions": {
+          "type": "array"
+        },
+        "constraint_decisions": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": true
+    },
+    "render_variables": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "subject",
+        "greeting",
+        "closing"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "greeting": {
+          "type": "string"
+        },
+        "closing": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "steps": [
+    {
+      "id": "packet_build",
+      "kind": "command",
+      "timeout_s": 600,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      },
+      "command": [
+        "uv",
+        "run",
+        "python",
+        "scripts/weekly_review/packet_builder.py",
+        "{{params.team_flag}}",
+        "{{params.team}}",
+        "--env",
+        "{{params.env}}",
+        "--output-dir",
+        "{{params.run_dir}}",
+        "--run-id",
+        "{{params.run_id}}"
+      ]
+    },
+    {
+      "id": "packet_preflight_guard",
+      "kind": "command",
+      "needs": [
+        "packet_build"
+      ],
+      "command": "uv run python - <<'PY'\nimport json, sys\nfrom pathlib import Path\nrun_dir = Path('{{params.run_dir}}')\npacket = json.loads((run_dir / 'packet.json').read_text(encoding='utf-8'))\npreflight = packet.get('preflight') or []\nreds = [p for p in preflight if str(p.get('status', '')).upper() == 'RED']\nif packet.get('meta', {}).get('stale_reconciliation'):\n    print('STALE RECONCILIATION: unreconciled lists may be stale')\nif reds:\n    print('PACKET PREFLIGHT RED — stop for operator review before continuing:')\n    for item in reds:\n        print(f\"- {item.get('name')}: {item.get('detail')}\")\n    sys.exit(1)\nprint(f'PACKET PREFLIGHT OK — {len(preflight)} checks')\nPY",
+      "timeout_s": 60,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "shard_evidence",
+      "kind": "command",
+      "needs": [
+        "packet_preflight_guard"
+      ],
+      "command": [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "scripts.weekly_review.shard_evidence",
+        "--run-dir",
+        "{{params.run_dir}}"
+      ],
+      "timeout_s": 120,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "annotate_rows",
+      "kind": "agent",
+      "needs": [
+        "shard_evidence"
+      ],
+      "prefer": [
+        "claude",
+        "codex"
+      ],
+      "sandbox": "write",
+      "write_paths": [
+        "{{params.run_dir}}/annotation_raw.json"
+      ],
+      "timeout_s": 900,
+      "heartbeat_interval_s": 30,
+      "prompt": "You are executing the review-client-v4 Annotation phase. Read {{params.run_dir}}/annotation_args.json, then every evidence shard it names by count under {{params.run_dir}}/evidence/. For each triage shard, emit one raw TRIAGE annotation with shard_index and family but no row_id. For each task shard, emit one raw TASK_VERDICT annotation with shard_index and family but no row_id. If a shard cannot be resolved safely, emit {failed:true, shard_index, family}; assemble_annotations.py will convert it to NEEDS_COPILOT. Translate {{params.run_dir}}/rules.json, if present, into typed constraints. Decide from supplied evidence first; investigate only with read-only team-scoped Intelia capabilities when necessary, recording external facts in evidence_ext. Never mutate business data. Write exactly {{params.run_dir}}/annotation_raw.json as JSON: {annotations_raw:[...], constraints:[...], coverage:{expected:<triage+tasks>, produced:<raw annotations count>}}. The coverage counts must match annotation_args.json. Return only a short confirmation after the file is written."
+    },
+    {
+      "id": "assemble_annotations",
+      "kind": "command",
+      "needs": [
+        "annotate_rows"
+      ],
+      "command": [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "scripts.weekly_review.assemble_annotations",
+        "--run-dir",
+        "{{params.run_dir}}"
+      ],
+      "timeout_s": 180,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "verify_evidence",
+      "kind": "command",
+      "needs": [
+        "assemble_annotations"
+      ],
+      "command": [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "scripts.weekly_review.verify_evidence",
+        "--run-dir",
+        "{{params.run_dir}}",
+        "--env",
+        "{{params.env}}"
+      ],
+      "timeout_s": 300,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "render_gate1",
+      "kind": "command",
+      "needs": [
+        "verify_evidence"
+      ],
+      "command": [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "scripts.weekly_review.render_gate1",
+        "--run-dir",
+        "{{params.run_dir}}"
+      ],
+      "timeout_s": 120,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "gate1_triage_decisions",
+      "kind": "checkpoint",
+      "needs": [
+        "render_gate1"
+      ],
+      "mode": "input",
+      "prompt": "Gate 1: review {{params.run_dir}}/gate1.html. Write {{params.run_dir}}/decisions.json covering every annotation row and every constraint. Defaults are ACCEPT; only encode exceptions/rejections/overrides. For annotations with evidence_ext, explicitly set accept_external_evidence true/false. Do not proceed until coverage is complete.",
+      "artifact": "{{params.run_dir}}/gate1.html",
+      "schema": "decisions_artifact",
+      "output": "{{params.run_dir}}/decisions.json"
+    },
+    {
+      "id": "validate_decision_coverage",
+      "kind": "command",
+      "needs": [
+        "gate1_triage_decisions"
+      ],
+      "command": "uv run python - <<'PY'\nfrom pathlib import Path\nfrom scripts.weekly_review.models import AnnotationsArtifact, DecisionsArtifact\nfrom scripts.weekly_review.validators import validate_decision_coverage\nd = Path('{{params.run_dir}}')\nr = validate_decision_coverage(AnnotationsArtifact.read_json(d / 'annotations.json'), DecisionsArtifact.read_json(d / 'decisions.json'))\nprint('COVERAGE OK' if r.ok else '\n'.join(v.message for v in r.violations))\nraise SystemExit(0 if r.ok else 1)\nPY",
+      "timeout_s": 60,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "apply_decisions",
+      "kind": "command",
+      "needs": [
+        "validate_decision_coverage"
+      ],
+      "command": [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "scripts.weekly_review.apply_decisions",
+        "--run-dir",
+        "{{params.run_dir}}",
+        "--env",
+        "{{params.env}}"
+      ],
+      "timeout_s": 900,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "compose_render_variables",
+      "kind": "agent",
+      "needs": [
+        "apply_decisions"
+      ],
+      "prefer": [
+        "claude",
+        "codex"
+      ],
+      "sandbox": "write",
+      "write_paths": [
+        "{{params.run_dir}}/render/variables.json"
+      ],
+      "timeout_s": 900,
+      "heartbeat_interval_s": 30,
+      "prompt": "Compose the review-client-v4 RenderVariables artifact. Read packet.json, annotations.json, decisions.json, and applied.json from {{params.run_dir}}. Write {{params.run_dir}}/render/variables.json in the scripts.weekly_review.models.RenderVariables shape. Ground every client-facing claim in packet row_ids; tables must be mechanical from packet rows and include the mandatory Nota column. Default doubts to business expense / missing invoice with company CIF; ask work-vs-personal only when genuinely personal-looking. Do not edit email HTML directly. Subject must be {{params.subject}} unless the artifacts make that unsafe; if unsafe, stop with a clear error instead of inventing. Return only a short confirmation after writing the JSON file."
+    },
+    {
+      "id": "validate_render_variables",
+      "kind": "command",
+      "needs": [
+        "compose_render_variables"
+      ],
+      "command": [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "scripts.weekly_review.validators",
+        "--run-dir",
+        "{{params.run_dir}}",
+        "--recipients",
+        "{{params.to}},{{params.cc}}"
+      ],
+      "timeout_s": 300,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "render_email",
+      "kind": "command",
+      "needs": [
+        "validate_render_variables"
+      ],
+      "command": [
+        "uv",
+        "run",
+        "python",
+        "scripts/weekly_review/render_email.py",
+        "--run-dir",
+        "{{params.run_dir}}"
+      ],
+      "timeout_s": 120,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "gate2_draft_approval",
+      "kind": "checkpoint",
+      "needs": [
+        "render_email"
+      ],
+      "mode": "confirm",
+      "prompt": "Gate 2: review {{params.run_dir}}/render/email.html and {{params.run_dir}}/render/render_report.json. Confirm only if the draft is ready to create in Gmail. If edits are needed, do not approve: edit RenderVariables upstream and re-run validation/render before resolving this checkpoint.",
+      "artifact": "{{params.run_dir}}/render/email.html",
+      "output": "{{params.run_dir}}/gate2_approval.json"
+    },
+    {
+      "id": "create_draft_with_attachments",
+      "kind": "command",
+      "needs": [
+        "gate2_draft_approval"
+      ],
+      "command": [
+        "uv",
+        "run",
+        "python",
+        "scripts/review_attachments.py",
+        "{{params.team_flag}}",
+        "{{params.team}}",
+        "--env",
+        "{{params.env}}",
+        "--date-from",
+        "{{params.date_from}}",
+        "--create-draft-with-body",
+        "{{params.run_dir}}/render/email.html",
+        "--subject",
+        "{{params.subject}}",
+        "--to",
+        "{{params.to}}",
+        "--cc",
+        "{{params.cc}}",
+        "--output-dir",
+        "{{params.run_dir}}",
+        "--run-id",
+        "{{params.run_id}}"
+      ],
+      "timeout_s": 900,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "gate3_send_confirmation",
+      "kind": "checkpoint",
+      "needs": [
+        "create_draft_with_attachments"
+      ],
+      "mode": "confirm",
+      "prompt": "Gate 3: review {{params.run_dir}}/manifest.json: draft_id, to/cc, attachment names, CSV row counts. Send only on an explicit go. Ambiguous is not a go.",
+      "artifact": "{{params.run_dir}}/manifest.json",
+      "output": "{{params.run_dir}}/send_confirmation.json"
+    },
+    {
+      "id": "send_draft",
+      "kind": "command",
+      "needs": [
+        "gate3_send_confirmation"
+      ],
+      "command": "uv run python - <<'PY'\nimport asyncio, json\nfrom pathlib import Path\nfrom typing import cast, get_args\nfrom intelia import capabilities as cap\nfrom intelia_admin.capabilities.sdk.context import SDKEnv\nfrom scripts.review_attachments import _build_process_context, _resolve_agent_uid\nRUN_DIR = Path('{{params.run_dir}}')\nENV = '{{params.env}}'\nRUN_ID = '{{params.run_id}}'\nasync def main():\n    if ENV not in get_args(SDKEnv):\n        raise SystemExit(f'Invalid env {ENV!r}')\n    packet = json.loads((RUN_DIR / 'packet.json').read_text(encoding='utf-8'))\n    manifest = json.loads((RUN_DIR / 'manifest.json').read_text(encoding='utf-8'))\n    team_id = str(packet['meta']['team_id'])\n    draft_id = str(manifest['draft_id'])\n    async with cap.client(env=cast(SDKEnv, ENV), process_context=_build_process_context(RUN_ID)) as client:\n        agent_uid = await _resolve_agent_uid(client, team_id)\n        result = await client.execute('email.send_draft', {'team_id': team_id, 'agent_uid': agent_uid, 'draft_id': draft_id})\n    if not getattr(result, 'success', True):\n        raise RuntimeError(getattr(result, 'error', 'email.send_draft failed'))\n    email_id = (getattr(result, 'data', None) or {}).get('email_id')\n    if not email_id:\n        raise RuntimeError(f'email.send_draft returned no email_id: {getattr(result, \"data\", None)!r}')\n    out = {'email_id': str(email_id), 'draft_id': draft_id, 'team_id': team_id}\n    (RUN_DIR / 'sent_email.json').write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding='utf-8')\n    print(f'SEND OK — email_id={email_id}')\nasyncio.run(main())\nPY",
+      "timeout_s": 300,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    },
+    {
+      "id": "finalize",
+      "kind": "command",
+      "needs": [
+        "send_draft"
+      ],
+      "command": "uv run python - <<'PY'\nimport json, subprocess\nfrom pathlib import Path\nRUN_DIR = Path('{{params.run_dir}}')\nSUMMARY_FILE = '{{params.summary_file}}'\nsent = json.loads((RUN_DIR / 'sent_email.json').read_text(encoding='utf-8'))\nemail_id = sent['email_id']\nif not SUMMARY_FILE or SUMMARY_FILE == 'None':\n    raise SystemExit('params.summary_file is required for finalize.py')\nsubprocess.run([\n    'uv', 'run', 'python', 'scripts/weekly_review/finalize.py',\n    '--run-dir', str(RUN_DIR),\n    '--env', '{{params.env}}',\n    '--email-id', str(email_id),\n    '--summary-file', SUMMARY_FILE,\n], check=True)\nPY",
+      "timeout_s": 600,
+      "gate": {
+        "field": "exit_code",
+        "abort_on": [
+          "non-zero"
+        ]
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "{{params.run_dir}}/packet.json",
+      "type": "file"
+    },
+    {
+      "path": "{{params.run_dir}}/annotations.json",
+      "type": "file"
+    },
+    {
+      "path": "{{params.run_dir}}/decisions.json",
+      "type": "file"
+    },
+    {
+      "path": "{{params.run_dir}}/applied.json",
+      "type": "file"
+    },
+    {
+      "path": "{{params.run_dir}}/render/variables.json",
+      "type": "file"
+    },
+    {
+      "path": "{{params.run_dir}}/render/email.html",
+      "type": "file"
+    },
+    {
+      "path": "{{params.run_dir}}/manifest.json",
+      "type": "file"
+    },
+    {
+      "path": "{{params.run_dir}}/sent_email.json",
+      "type": "file"
+    },
+    {
+      "path": "{{params.run_dir}}/finalize.json",
+      "type": "file"
+    }
+  ],
+  "output": {
+    "run_dir": "{{params.run_dir}}",
+    "gate1": "{{steps.gate1_triage_decisions.value}}",
+    "gate2": "{{steps.gate2_draft_approval.value}}",
+    "send": "{{steps.send_draft.value}}",
+    "finalize": "{{steps.finalize.value}}"
+  }
+}
