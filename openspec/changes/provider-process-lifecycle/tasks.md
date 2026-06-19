@@ -1,7 +1,8 @@
 ## 1. Helper de grupos de procesos
 
-- [ ] 1.1 Añadir un helper interno (stdlib `os`/`signal`) que, dado un `asyncio.subprocess.Process`, mate su grupo de procesos completo: `os.killpg(os.getpgid(proc.pid), SIGKILL)` con fallback a `proc.kill()` si `ProcessLookupError`/no-POSIX.
-- [ ] 1.2 El helper debe ser idempotente y no lanzar si el proceso/grupo ya terminó.
+- [ ] 1.1 Capturar el `pgid` **al lanzar**, no en teardown: con `start_new_session=True` el líder cumple `pgid == proc.pid`, así que guardar `pgid = proc.pid` en el momento del spawn. GOTCHA CRÍTICO: NUNCA usar `os.getpgid(proc.pid)` en el `finally` — en el camino de éxito el proceso líder ya salió, `os.getpgid` lanzaría `ProcessLookupError` y los hijos supervivientes nunca se matarían (reproduce el leak de #9).
+- [ ] 1.2 Helper interno (stdlib `os`/`signal`) que, dado el `pgid` guardado, mate el grupo: `os.killpg(pgid, SIGKILL)`. Idempotente: captura `ProcessLookupError`/`PermissionError` y no relanza; fallback a `proc.kill()` en no-POSIX (sin `os.killpg`).
+- [ ] 1.3 Caveat documentado (no resoluble con killpg): un nieto que llama `setsid()` por su cuenta abandona el grupo y killpg no lo alcanza; playwright/chromium normalmente NO lo hacen, por lo que este enfoque cubre el caso tactiq de #9. Anotarlo como limitación conocida.
 
 ## 2. Aislamiento de procesos en providers
 
