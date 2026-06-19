@@ -172,19 +172,20 @@ The result of a run is a **bundle**:
 ## Writing a dynamic spec
 
 A spec is `{ name?, description?, params?, schemas?, output?, artifacts?, steps:[…] }`.
-Each step has an `id`, a `kind`, optional `needs` (prior step ids), and kind-specific
-fields. `artifacts` lists required output files/dirs validated before `DONE`; relative
+Each step has an `id`, a `kind`, optional `needs` (prior step ids), optional `when`,
+and kind-specific fields. `artifacts` lists required output files/dirs validated before `DONE`; relative
 artifact paths resolve against workflow `cwd`.
 
 ### Step kinds
 
 | kind | what it does | key fields |
 |---|---|---|
-| `agent` | one worker call | `prompt`, `schema?`, `prefer?`, `role?`, `gate?`, `sandbox?`, `tools?`, `write_paths?`, `required?` |
-| `parallel` | fan-out **barrier** of agents | `agents:[…]` |
-| `pipeline` | per-item staged flow, **no barrier** between stages | `items` (→list), `stages:[…]` |
-| `loop` | repeat a `body` until a stop condition | `body:[…]`, `until`, `max_iterations` (required), `collect?` |
+| `agent` | one worker call | `prompt`, `schema?`, `prefer?`, `role?`, `gate?`, `sandbox?`, `tools?`, `write_paths?`, `required?`, `when?` |
+| `parallel` | fan-out **barrier** of agents | `agents:[…]`, `when?` |
+| `pipeline` | per-item staged flow, **no barrier** between stages | `items` (→list), `stages:[…]`, `when?` |
+| `loop` | repeat a `body` until a stop condition | `body:[…]`, `until`, `max_iterations` (required), `collect?`, `when?` |
 | `supervisor` | a coordinator inspects state and **adapts the remaining plan** | `prompt`, `watch?`, `when?` |
+| `command` | one local subprocess | `command`, `cwd?`, `env?`, `timeout_s?`, `gate?`, `when?` |
 
 ### Templating
 Prompts (and most string fields) render against the run context:
@@ -197,6 +198,36 @@ Prompts (and most string fields) render against the run context:
 A string that is **exactly** one `{{token}}` resolves to the raw object (so
 `"items": "{{loop.collected}}"` stays a list); otherwise tokens stringify inline.
 
+### Conditional Routing — `when`
+Any top-level `agent`, `parallel`, `pipeline`, `loop`, or `command` step can include
+`when`. The runner evaluates it deterministically against the accumulated context
+before dispatching the step. If the predicate is false, no provider, CLI, or
+subprocess runs; the step is journaled as `{"skipped": true, "ok": true, "kind": ...}`,
+emits a `skipped` event, and satisfies downstream `needs`. Dependents do not inherit
+the skip automatically; add their own `when` if they should branch too.
+
+Available paths include `params.*`, `steps.<id>.value.*`, and metadata on a skipped
+step such as `steps.<id>.skipped` or `steps.<id>.kind`. A leaf predicate is
+`{"path": "<dotted>", <op>: operand}` with operators `eq`, `ne`, `in`, `nin`,
+`gte`, `lte`, `gt`, `lt`, `contains`, `truthy`, and `exists`. Use `select` to apply
+a sub-path to each element when the path resolves to a list; combine predicates with
+`all`, `any`, and `not`.
+
+```jsonc
+{
+  "steps": [
+    { "id": "tests", "kind": "command", "command": "pytest -q" },
+    { "id": "audit", "kind": "agent", "needs": ["tests"],
+      "when": { "path": "steps.tests.value.exit_code", "eq": 0 },
+      "prefer": ["codex"],
+      "prompt": "Audit the passing test run: {{steps.tests.value.stdout}}" },
+    { "id": "notify", "kind": "agent", "needs": ["audit"],
+      "when": { "path": "steps.audit.skipped", "truthy": true },
+      "prompt": "Explain that audit was skipped because tests failed." }
+  ]
+}
+```
+
 ### `agent` — schema, routing, gate
 ```jsonc
 { "id": "gate", "kind": "agent", "schema": "gate",
@@ -206,7 +237,13 @@ A string that is **exactly** one `{{token}}` resolves to the raw object (so
 ```
 - `schema` is a name (registered in `schemas`, or built-ins `decision`/`supervision`)
   or an inline JSON-Schema dict. Codex/Claude enforce it natively; Gemini parses a
-  JSON block.
+  JSON block. When `schema` is set, iworkflow also validates the complete returned
+  `res.value` in the engine before marking the agent `DONE`; a mismatch emits
+  `schema_mismatch` with `label`, `provider`, and `why`, then tries the next
+  provider. If every provider mismatches, `required:true` fails the sequential step
+  and `required:false` continues with `value:null` / `ok:false`. Parallel and
+  pipeline subagents validate independently, so one bad subresult marks that element
+  and the aggregate step `ok:false`.
 - `prefer` overrides routing; omit it to let routing pick by `role`/inferred task kind
   (and, with `learn=True`, demote providers the ledger shows failing).
 - `write_paths` should be set on any `sandbox:"write"` / `tools:["write"]` step.
@@ -231,6 +268,53 @@ Item A can be in stage 3 while item B is still in stage 1.
   "stages": [
     { "id": "review", "schema": "findings", "prompt": "Review {{item}}." },
     { "id": "verify", "prompt": "Adversarially verify: {{prev.value}}" } ] }
+```
+
+### Write isolation with git worktrees
+Write-capable agents inside `parallel` and `pipeline` steps run in isolated git
+worktrees automatically. An agent is write-capable when `sandbox` is not
+`"read-only"` or its `tools` includes `"write"`. Top-level `agent` steps keep the
+existing cwd behavior.
+
+Requirements:
+- `cwd` must be inside a git repository and git must support `worktree`
+  (git 2.5+).
+- Each write-capable subagent should declare `write_paths`; paths are checked
+  inside that agent's worktree.
+
+Behavior:
+- The worktree path is deterministic under the system temp directory, keyed by
+  `run_id`, step id, and agent id.
+- Read-only subagents in the same `parallel` or `pipeline` step still run in the
+  runner default cwd.
+- Successful writes are squashed back into the base working tree before the parent
+  step returns. Validation or provider failures skip consolidation.
+- Worktrees are removed with `git worktree remove --force` on success and failure.
+- If a write-capable `parallel` or `pipeline` subagent runs outside git, the
+  workflow fails before calling any provider.
+
+```jsonc
+{
+  "steps": [{
+    "id": "edit_docs",
+    "kind": "parallel",
+    "agents": [
+      {
+        "id": "usage",
+        "prefer": ["codex"],
+        "sandbox": "write",
+        "tools": ["write"],
+        "write_paths": ["docs/USING_IWORKFLOW.md"],
+        "prompt": "Update the usage guide."
+      },
+      {
+        "id": "audit",
+        "prefer": ["gemini"],
+        "prompt": "Review the docs for consistency."
+      }
+    ]
+  }]
+}
 ```
 
 ### `loop` — repeat until a stop condition (always `max_iterations`-capped)
@@ -292,6 +376,18 @@ The coordinator returns the built-in `supervision` schema:
 Default routing already encodes this; use `prefer`/`role` to steer, or trust the
 router. Never rely on `claude -p` (metered) as a worker.
 
+### Claude tmux isolation
+
+Interactive Claude workers run in a tmux server dedicated to the iworkflow run:
+`tmux -L iw_<run_id> ...`. The individual Claude sessions still use internal
+`iwf-*` names, but they live in that per-run socket rather than the user's default
+tmux namespace, so `tmux ls` in a normal shell will not show or collide with them.
+
+When the workflow finishes, iworkflow calls `tmux -L iw_<run_id> kill-server`.
+That removes the run's tmux server after the provider has already cleaned up its
+individual sessions. If no interactive Claude worker was configured, teardown is
+a no-op.
+
 ## Safety / Limits (a spec can arrive from an untrusted agent over MCP)
 
 Defaults (widen explicitly only from a trusted CLI/SDK caller via `Limits(...)`):
@@ -311,9 +407,10 @@ Defaults (widen explicitly only from a trusted CLI/SDK caller via `Limits(...)`)
 
 Per run under `.iworkflow/runs/<run_id>/`:
 - `events.jsonl` — full structured trace (`route`/`dispatch`/`done`/`limited`/`error`/
-  `cooling`/`exhausted`/`resumed`).
+  `cooling`/`schema_mismatch`/`exhausted`/`resumed`).
 - `ledger.jsonl` — durable per-agent record (also drives resume): provider, attempts,
-  prompt/schema hashes, timing, `kind`, `tools`, input/output tokens, cost.
+  prompt/schema hashes, `schema_ok`, timing, `kind`, `tools`, input/output tokens,
+  cost.
 - `wf-steps.json` — completed top-level steps (step-boundary resume).
 
 Re-running the **same `run_id`** short-circuits completed steps (zero new provider

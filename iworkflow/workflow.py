@@ -18,6 +18,9 @@ import json
 import asyncio
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
@@ -63,6 +66,133 @@ class WorkflowError(Exception):
 
 class WorkflowLimitError(WorkflowError):
     """A spec breaches a configured safety limit (resource bound or policy)."""
+
+
+_WORKTREE_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _worktree_component(value: str) -> str:
+    cleaned = _WORKTREE_SAFE.sub("_", str(value)).strip("._-")
+    return cleaned or "unnamed"
+
+
+def _is_git_repo(path: Path) -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def _worktree_path(run_id: str, step_id: str, agent_id: str) -> Path:
+    return Path(tempfile.gettempdir()) / (
+        "iwf-"
+        f"{_worktree_component(run_id)}-"
+        f"{_worktree_component(step_id)}-"
+        f"{_worktree_component(agent_id)}"
+    )
+
+
+async def _git_exec(cwd: Path, *args: str) -> tuple[int, str, str]:
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        *args,
+        cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_b, stderr_b = await proc.communicate()
+    stdout = stdout_b.decode("utf-8", errors="replace")
+    stderr = stderr_b.decode("utf-8", errors="replace")
+    return proc.returncode, stdout, stderr
+
+
+def _git_error(action: str, stderr: str, stdout: str = "") -> WorkflowError:
+    detail = (stderr or stdout).strip() or "git command failed"
+    return WorkflowError(f"{action} failed: {detail}")
+
+
+async def _create_worktree(base_cwd: Path, wt_path: Path, branch: str) -> None:
+    del branch  # Worktrees are detached; the deterministic path carries identity.
+    if wt_path.exists():
+        await _remove_worktree(base_cwd, wt_path)
+        if wt_path.exists():
+            shutil.rmtree(wt_path)
+    code, stdout, stderr = await _git_exec(
+        base_cwd,
+        "worktree",
+        "add",
+        "--detach",
+        str(wt_path),
+    )
+    if code != 0:
+        raise _git_error("git worktree add", stderr, stdout)
+
+
+async def _remove_worktree(base_cwd: Path, wt_path: Path) -> None:
+    code, stdout, stderr = await _git_exec(
+        base_cwd,
+        "worktree",
+        "remove",
+        "--force",
+        str(wt_path),
+    )
+    if code != 0 and wt_path.exists():
+        detail = (stderr or stdout).strip() or "unknown error"
+        log(f"WARN     git worktree remove failed for {wt_path}: {detail}")
+
+
+async def _has_staged_changes(repo: Path) -> bool:
+    code, stdout, stderr = await _git_exec(repo, "diff", "--cached", "--quiet")
+    if code == 0:
+        return False
+    if code == 1:
+        return True
+    raise _git_error("git diff --cached", stderr, stdout)
+
+
+async def _consolidate_worktree(base_cwd: Path, wt_path: Path) -> None:
+    code, stdout, stderr = await _git_exec(
+        wt_path,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+    )
+    if code != 0:
+        raise _git_error("git status", stderr, stdout)
+    if not stdout.strip():
+        return
+
+    code, stdout, stderr = await _git_exec(wt_path, "add", "-A")
+    if code != 0:
+        raise _git_error("git add", stderr, stdout)
+    if not await _has_staged_changes(wt_path):
+        return
+
+    code, stdout, stderr = await _git_exec(
+        wt_path,
+        "commit",
+        "-m",
+        "iworkflow isolated agent changes",
+    )
+    if code != 0:
+        raise _git_error("git commit", stderr, stdout)
+
+    code, stdout, stderr = await _git_exec(wt_path, "rev-parse", "HEAD")
+    if code != 0:
+        raise _git_error("git rev-parse HEAD", stderr, stdout)
+    head = stdout.strip()
+
+    code, stdout, stderr = await _git_exec(base_cwd, "merge", "--squash", head)
+    if code != 0:
+        raise _git_error("git merge --squash", stderr, stdout)
+    if await _has_staged_changes(base_cwd):
+        code, stdout, stderr = await _git_exec(base_cwd, "commit", "--no-edit")
+        if code != 0:
+            raise _git_error("git commit --no-edit", stderr, stdout)
 
 
 @dataclass(frozen=True)
@@ -281,7 +411,7 @@ class Step:
     collect: dict[str, Any] | None = None      # kind == loop
     supervisor: AgentSpec | None = None        # kind == supervisor (the coordinator agent)
     watch: list[str] | None = None             # kind == supervisor (steps to expose; None=all)
-    when: dict[str, Any] | None = None         # kind == supervisor (deviation guard; None=always)
+    when: dict[str, Any] | None = None         # top-level conditional guard; None=always
     command: str | list[str] | None = None                  # kind == command
     cwd: str | None = None                                  # kind == command
     env: dict[str, str] | None = None                       # kind == command
@@ -471,12 +601,6 @@ def _parse_step(d: dict[str, Any], seen: set[str], *, top: bool,
         # its schema to the built-in `supervision` decision shape.
         step.supervisor = _parse_agent({"schema": "supervision", **d}, sid, limits)
         step.watch = watch
-        # optional deviation guard: the coordinator only fires when `when` is true,
-        # so the common path spends zero coordinator tokens. Validate it now.
-        when = d.get("when")
-        if when is not None:
-            _validate_when(when)
-        step.when = when
     elif kind == "command":
         cmd = d.get("command")
         if not cmd:
@@ -488,6 +612,10 @@ def _parse_step(d: dict[str, Any], seen: set[str], *, top: bool,
         step.env = d.get("env")
         step.timeout_s = d.get("timeout_s")
         step.gate = d.get("gate")
+    when = d.get("when")
+    if top and when is not None:
+        _validate_when(when)
+        step.when = when
     return step
 
 
@@ -621,6 +749,7 @@ class _Executor:
         self._completed: dict[str, Any] = self._load_steps()
         for sid, result in self._completed.items():
             self.ctx["steps"][sid] = result
+        self._worktree_consolidate_lock = asyncio.Lock()
 
     def _load_steps(self) -> dict[str, Any]:
         if not self._steps_path.exists():
@@ -637,79 +766,99 @@ class _Executor:
         os.replace(tmp, self._steps_path)
 
     async def run(self) -> dict[str, Any]:
-        # Pre-flight check before execution unless the caller already validated.
-        if not self.preflight_checked:
-            check_preflight(
-                self.wf.execution,
-                self.runner.default_cwd,
-                ignore_paths=[self.runner.journal_dir],
-            )
-
-        status, aborted_at = "DONE", None
         try:
-            i = 0
-            while i < len(self.plan):
-                batch = []
-                while i < len(self.plan) and self.plan[i].kind != "supervisor":
-                    batch.append(self.plan[i])
-                    i += 1
-                
-                if batch:
-                    tasks = {}
-                    async def run_step_with_deps(step: Step):
-                        for dep in step.needs:
-                            if dep in tasks:
-                                await tasks[dep]
-                        
+            # Pre-flight check before execution unless the caller already validated.
+            if not self.preflight_checked:
+                check_preflight(
+                    self.wf.execution,
+                    self.runner.default_cwd,
+                    ignore_paths=[self.runner.journal_dir],
+                )
+
+            status, aborted_at = "DONE", None
+            try:
+                i = 0
+                while i < len(self.plan):
+                    batch = []
+                    while i < len(self.plan) and self.plan[i].kind != "supervisor":
+                        batch.append(self.plan[i])
+                        i += 1
+
+                    if batch:
+                        tasks = {}
+                        async def run_step_with_deps(step: Step):
+                            for dep in step.needs:
+                                if dep in tasks:
+                                    await tasks[dep]
+
+                            if step.id in self._completed:
+                                result = self._completed[step.id]
+                                self.ctx["steps"][step.id] = result
+                                log(f"RESUMED step {step.id} (journaled, 0 agents)")
+                                return
+
+                            if step.when is not None and not _eval_when(step.when, self.ctx):
+                                log(f"SKIPPED  {step.id}: when=false (0 agents)")
+                                result = {"skipped": True, "ok": True, "kind": step.kind}
+                                self.ctx["steps"][step.id] = result
+                                self._completed[step.id] = result
+                                self._persist_steps()
+                                self.runner._emit(
+                                    step.id, "skipped", kind=step.kind, when=step.when)
+                                return
+
+                            # A skipped dependency satisfies `needs`; downstream steps
+                            # only skip when their own `when` says so.
+                            result = await self._exec_step(step, self.ctx, step.id)
+                            self.ctx["steps"][step.id] = result
+                            self._completed[step.id] = result
+                            self._persist_steps()
+
+                        for step in batch:
+                            tasks[step.id] = asyncio.create_task(run_step_with_deps(step))
+
+                        done, pending = await asyncio.wait(
+                            tasks.values(),
+                            return_when=asyncio.FIRST_EXCEPTION,
+                        )
+                        if pending:
+                            for t in pending:
+                                t.cancel()
+                            await asyncio.gather(*pending, return_exceptions=True)
+
+                        for t in done:
+                            t.result()
+
+                    if i < len(self.plan) and self.plan[i].kind == "supervisor":
+                        step = self.plan[i]
                         if step.id in self._completed:
                             result = self._completed[step.id]
                             self.ctx["steps"][step.id] = result
-                            log(f"RESUMED step {step.id} (journaled, 0 agents)")
-                            return
-                        
-                        result = await self._exec_step(step, self.ctx, step.id)
-                        self.ctx["steps"][step.id] = result
-                        self._completed[step.id] = result
-                        self._persist_steps()
-
-                    for step in batch:
-                        tasks[step.id] = asyncio.create_task(run_step_with_deps(step))
-                    
-                    done, pending = await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_EXCEPTION)
-                    if pending:
-                        for t in pending:
-                            t.cancel()
-                        await asyncio.gather(*pending, return_exceptions=True)
-                    
-                    for t in done:
-                        t.result()
-                
-                if i < len(self.plan) and self.plan[i].kind == "supervisor":
-                    step = self.plan[i]
-                    if step.id in self._completed:
-                        result = self._completed[step.id]
-                        self.ctx["steps"][step.id] = result
-                        self._apply_supervision(result.get("value") or {}, i, replay=True)
-                    else:
-                        result = await self._exec_supervisor(step, i)
-                        self.ctx["steps"][step.id] = result
-                        self._completed[step.id] = result
-                        self._persist_steps()
-                    i += 1
-        except _Abort as a:
-            status, aborted_at = "ABORTED", a.step_id
-        out = render(self.wf.output, self.ctx) if self.wf.output is not None else None
-        if status == "DONE":
-            self._validate_artifacts()
-        bundle = {
-            "status": status,
-            "name": self.wf.name,
-            "output": out,
-            "steps": {sid: r.get("value") for sid, r in self.ctx["steps"].items()},
-        }
-        if aborted_at:
-            bundle["aborted_at"] = aborted_at
-        return bundle
+                            self._apply_supervision(result.get("value") or {}, i, replay=True)
+                        else:
+                            result = await self._exec_supervisor(step, i)
+                            self.ctx["steps"][step.id] = result
+                            self._completed[step.id] = result
+                            self._persist_steps()
+                        i += 1
+            except _Abort as a:
+                status, aborted_at = "ABORTED", a.step_id
+            out = render(self.wf.output, self.ctx) if self.wf.output is not None else None
+            if status == "DONE":
+                self._validate_artifacts()
+            bundle = {
+                "status": status,
+                "name": self.wf.name,
+                "output": out,
+                "steps": {sid: r.get("value") for sid, r in self.ctx["steps"].items()},
+            }
+            if aborted_at:
+                bundle["aborted_at"] = aborted_at
+            return bundle
+        finally:
+            teardown = getattr(self.runner, "teardown_tmux", None)
+            if teardown is not None:
+                await teardown()
 
     def _validate_artifacts(self) -> None:
         if not self.wf.artifacts:
@@ -747,32 +896,39 @@ class _Executor:
             raise WorkflowError(f"unknown schema name {schema!r}")
         return resolved
 
-    async def _agent_call(self, a: AgentSpec, ctx: dict[str, Any], label: str) -> AgentResult:
+    async def _agent_call(
+        self,
+        a: AgentSpec,
+        ctx: dict[str, Any],
+        label: str,
+        *,
+        cwd: Path | None = None,
+    ) -> AgentResult:
         self.calls += 1
         if self.calls > self.limits.max_total_agent_calls:
             raise WorkflowLimitError(
                 f"workflow exceeded max_total_agent_calls={self.limits.max_total_agent_calls}")
-        return await self.runner.agent(
-            render(a.prompt, ctx),
-            label=label,
-            schema=self._schema(a.schema),
-            prefer=a.prefer,
-            model=a.model,
-            models=a.models,
-            role=a.role,
-            sandbox=a.sandbox,
-            tools=a.tools,
-            timeout_s=a.timeout_s,
-            heartbeat_interval_s=a.heartbeat_interval_s,
-        )
+        kwargs = {
+            "label": label,
+            "schema": self._schema(a.schema),
+            "prefer": a.prefer,
+            "model": a.model,
+            "models": a.models,
+            "role": a.role,
+            "sandbox": a.sandbox,
+            "tools": a.tools,
+            "timeout_s": a.timeout_s,
+            "heartbeat_interval_s": a.heartbeat_interval_s,
+        }
+        if cwd is not None:
+            kwargs["cwd"] = str(cwd)
+        return await self.runner.agent(render(a.prompt, ctx), **kwargs)
 
     def _write_guard_needed(self, a: AgentSpec) -> bool:
         return a.sandbox != "read-only" or "write" in set(a.tools or [])
 
-    def _git_dirty_paths(self) -> set[str]:
-        import subprocess
-
-        root = Path(self.runner.default_cwd or os.getcwd())
+    def _git_dirty_paths(self, cwd: Path | None = None) -> set[str]:
+        root = cwd or Path(self.runner.default_cwd or os.getcwd())
         if not root.exists():
             return set()
         result = subprocess.run(
@@ -795,10 +951,8 @@ class _Executor:
                 dirty.add(path)
         return dirty
 
-    def _git_root(self) -> Path | None:
-        import subprocess
-
-        root = Path(self.runner.default_cwd or os.getcwd())
+    def _git_root(self, cwd: Path | None = None) -> Path | None:
+        root = cwd or Path(self.runner.default_cwd or os.getcwd())
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             cwd=root,
@@ -810,9 +964,16 @@ class _Executor:
             return None
         return Path(result.stdout.strip())
 
-    def _allowed_write_paths(self, a: AgentSpec, ctx: dict[str, Any]) -> list[str]:
-        workflow_root = Path(self.runner.default_cwd or os.getcwd())
-        git_root = self._git_root() or workflow_root
+    def _allowed_write_paths(
+        self,
+        a: AgentSpec,
+        ctx: dict[str, Any],
+        cwd: Path | None = None,
+        base_cwd: Path | None = None,
+    ) -> list[str]:
+        workflow_root = cwd or Path(self.runner.default_cwd or os.getcwd())
+        git_root = self._git_root(cwd) or workflow_root
+        base_git_root = self._git_root(base_cwd) if base_cwd is not None else None
         allowed: list[str] = []
         for raw in a.write_paths:
             rendered = render(raw, ctx)
@@ -821,10 +982,18 @@ class _Executor:
             path = Path(rendered)
             if not path.is_absolute():
                 path = workflow_root / path
-            try:
-                normalized = path.resolve().relative_to(git_root.resolve()).as_posix()
-            except ValueError:
-                normalized = path.as_posix()
+                roots = [git_root]
+            else:
+                roots = [git_root]
+                if base_git_root is not None:
+                    roots.append(base_git_root)
+            normalized = path.as_posix()
+            for root in roots:
+                try:
+                    normalized = path.resolve().relative_to(root.resolve()).as_posix()
+                    break
+                except ValueError:
+                    continue
             allowed.append(normalized.rstrip("/"))
         return allowed
 
@@ -837,13 +1006,20 @@ class _Executor:
         return False
 
     def _validate_write_paths(
-        self, a: AgentSpec, ctx: dict[str, Any], label: str, before_dirty: set[str]
+        self,
+        a: AgentSpec,
+        ctx: dict[str, Any],
+        label: str,
+        before_dirty: set[str],
+        *,
+        cwd: Path | None = None,
+        base_cwd: Path | None = None,
     ) -> None:
-        after_dirty = self._git_dirty_paths()
+        after_dirty = self._git_dirty_paths(cwd)
         new_dirty = sorted(after_dirty - before_dirty)
         if not new_dirty:
             return
-        allowed = self._allowed_write_paths(a, ctx)
+        allowed = self._allowed_write_paths(a, ctx, cwd, base_cwd)
         disallowed = [p for p in new_dirty if not self._is_allowed_write(p, allowed)]
         if disallowed:
             allowed_text = ", ".join(allowed) if allowed else "<none>"
@@ -851,6 +1027,67 @@ class _Executor:
                 f"agent step {label!r} wrote outside allowed paths: "
                 f"{', '.join(disallowed)} (allowed: {allowed_text})"
             )
+
+    def _base_cwd(self) -> Path:
+        return Path(self.runner.default_cwd or os.getcwd())
+
+    def _require_worktree_git_repo(self) -> Path:
+        base_cwd = self._base_cwd()
+        if not _is_git_repo(base_cwd):
+            raise WorkflowError(
+                "worktree isolation required for write-capable agents in "
+                "parallel/pipeline steps, but working directory is not a git "
+                f"repository: {base_cwd}"
+            )
+        return base_cwd
+
+    def _raise_required_failure(self, a: AgentSpec, res: AgentResult, label: str) -> None:
+        if res.ok or not a.required:
+            return
+        attempts = ", ".join(
+            f"{x.provider}:{x.outcome}{f' ({x.detail})' if x.detail else ''}"
+            for x in res.attempts
+        )
+        timeout = f", timeout_s={a.timeout_s}" if a.timeout_s is not None else ""
+        raise WorkflowError(
+            f"agent step {label!r} exhausted without a result ({attempts}{timeout})"
+        )
+
+    async def _agent_call_with_worktree(
+        self,
+        a: AgentSpec,
+        ctx: dict[str, Any],
+        label: str,
+        *,
+        step_id: str,
+        agent_id: str,
+        base_cwd: Path,
+    ) -> AgentResult:
+        wt_path = _worktree_path(self.runner.run_id, step_id, agent_id)
+        branch = (
+            f"iwf/{_worktree_component(self.runner.run_id)}-"
+            f"{_worktree_component(step_id)}-{_worktree_component(agent_id)}"
+        )
+        await _create_worktree(base_cwd, wt_path, branch)
+        try:
+            before_dirty = self._git_dirty_paths(wt_path)
+            res = await self._agent_call(a, ctx, label, cwd=wt_path)
+            if res.ok:
+                self._validate_write_paths(
+                    a,
+                    ctx,
+                    label,
+                    before_dirty,
+                    cwd=wt_path,
+                    base_cwd=base_cwd,
+                )
+                async with self._worktree_consolidate_lock:
+                    await _consolidate_worktree(base_cwd, wt_path)
+            else:
+                self._raise_required_failure(a, res, label)
+            return res
+        finally:
+            await _remove_worktree(base_cwd, wt_path)
 
     @staticmethod
     def _result(res: AgentResult, **extra: Any) -> dict[str, Any]:
@@ -1019,11 +1256,7 @@ class _Executor:
         if res.ok and self._write_guard_needed(a):
             self._validate_write_paths(a, ctx, label, before_dirty)
         out = self._result(res, kind="agent")
-        if not res.ok and a.required:
-            attempts = ", ".join(f"{x.provider}:{x.outcome}" for x in res.attempts)
-            timeout = f", timeout_s={a.timeout_s}" if a.timeout_s is not None else ""
-            raise WorkflowError(
-                f"agent step {label!r} exhausted without a result ({attempts}{timeout})")
+        self._raise_required_failure(a, res, label)
         if a.gate and res.ok:
             field_name = a.gate.get("field")
             value = res.value.get(field_name) if isinstance(res.value, dict) and field_name \
@@ -1036,8 +1269,27 @@ class _Executor:
         return out
 
     async def _exec_parallel(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
+        base_cwd = (
+            self._require_worktree_git_repo()
+            if any(self._write_guard_needed(a) for a in step.agents)
+            else None
+        )
+
         def thunk(a: AgentSpec):
-            return lambda: self._agent_call(a, ctx, f"{label}:{a.id}")
+            async def run() -> AgentResult:
+                agent_label = f"{label}:{a.id}"
+                if self._write_guard_needed(a):
+                    assert base_cwd is not None
+                    return await self._agent_call_with_worktree(
+                        a,
+                        ctx,
+                        agent_label,
+                        step_id=step.id,
+                        agent_id=a.id,
+                        base_cwd=base_cwd,
+                    )
+                return await self._agent_call(a, ctx, agent_label)
+            return run
 
         results = await self.runner.parallel([thunk(a) for a in step.agents])
         value = [self._result(r, id=a.id) for a, r in zip(step.agents, results)]
@@ -1052,15 +1304,44 @@ class _Executor:
                 f"pipeline step {step.id!r} has {len(items)} items > "
                 f"max_pipeline_items={self.limits.max_pipeline_items}")
 
+        base_cwd = (
+            self._require_worktree_git_repo()
+            if any(self._write_guard_needed(a) for a in step.stages)
+            else None
+        )
+
         def make_stage(a: AgentSpec):
             async def run(prev: Any, item: Any, idx: int) -> Any:
                 sctx = {**ctx, "item": item, "prev": prev, "index": idx}
-                res = await self._agent_call(a, sctx, f"{label}:{a.id}#{idx}")
+                agent_label = f"{label}:{a.id}#{idx}"
+                if self._write_guard_needed(a):
+                    assert base_cwd is not None
+                    res = await self._agent_call_with_worktree(
+                        a,
+                        sctx,
+                        agent_label,
+                        step_id=step.id,
+                        agent_id=f"{a.id}-{idx}",
+                        base_cwd=base_cwd,
+                    )
+                else:
+                    res = await self._agent_call(a, sctx, agent_label)
                 return self._result(res)
             return run
 
-        out = await self.runner.pipeline(items, *[make_stage(a) for a in step.stages])
-        return {"kind": "pipeline", "value": out, "ok": all(x is not None for x in out)}
+        stages = [make_stage(a) for a in step.stages]
+        if base_cwd is None:
+            out = await self.runner.pipeline(items, *stages)
+        else:
+            async def run_item(item: Any, idx: int) -> Any:
+                val = item
+                for stage in stages:
+                    val = await stage(val, item, idx)
+                return val
+            out = list(await asyncio.gather(
+                *(run_item(it, i) for i, it in enumerate(items))))
+        return {"kind": "pipeline", "value": out, "ok": all(
+            isinstance(x, dict) and x.get("ok") is True for x in out)}
 
     # --- the supervisor (adaptive re-planning) ---------------------------
     def _supervisor_state(self, step: Step) -> dict[str, Any]:

@@ -152,6 +152,118 @@ def test_claude_interactive_starts_tmux_session_in_cwd(tmp_path, monkeypatch):
     assert new_session[-1].startswith("claude ")
 
 
+def test_claude_interactive_tmux_socket_prefix(monkeypatch):
+    captured = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*argv, **_kwargs):
+        captured.append(list(argv))
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "iworkflow.providers.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    provider = ClaudeInteractiveProvider("claude", tmux_socket="iw_abc123")
+
+    asyncio.run(provider._tmux("new-session", "-d", "-s", "iwf-99-1"))
+
+    assert captured == [
+        ["tmux", "-L", "iw_abc123", "new-session", "-d", "-s", "iwf-99-1"]
+    ]
+
+
+def test_claude_interactive_no_socket_no_prefix(monkeypatch):
+    captured = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*argv, **_kwargs):
+        captured.append(list(argv))
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "iworkflow.providers.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    provider = ClaudeInteractiveProvider("claude")
+
+    asyncio.run(provider._tmux("new-session", "-d", "-s", "iwf-99-1"))
+
+    assert captured == [["tmux", "new-session", "-d", "-s", "iwf-99-1"]]
+    assert "-L" not in captured[0]
+
+
+def test_claude_interactive_run_uses_same_tmux_socket_for_every_command(monkeypatch):
+    captured = []
+    panes = [
+        "Claude Max plan mode",
+        "Claude Max plan mode",
+        "Claude Max plan mode\n⏺\n  complete",
+        "Claude Max plan mode\n⏺\n  complete",
+        "Claude Max plan mode\n⏺\n  complete",
+    ]
+
+    async def fast_sleep(_seconds):
+        return None
+
+    class FakeProcess:
+        def __init__(self, stdout=""):
+            self.stdout = stdout
+            self.returncode = 0
+
+        async def communicate(self):
+            return self.stdout.encode(), b""
+
+    async def fake_create_subprocess_exec(*argv, **_kwargs):
+        captured.append(list(argv))
+        if len(argv) > 3 and argv[1:3] == ("-L", "iw_run42"):
+            subcommand = argv[3]
+        else:
+            subcommand = argv[1]
+        if subcommand == "capture-pane":
+            pane = panes.pop(0) if panes else "Claude Max plan mode\n⏺\n  complete"
+            return FakeProcess(pane)
+        return FakeProcess()
+
+    monkeypatch.setattr("iworkflow.providers.asyncio.sleep", fast_sleep)
+    monkeypatch.setattr(
+        "iworkflow.providers.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    provider = ClaudeInteractiveProvider(
+        "claude",
+        timeout_s=1,
+        poll_s=0.01,
+        tmux_socket="iw_run42",
+    )
+
+    result = asyncio.run(provider.run("say hi", schema=None, sandbox="read-only"))
+
+    assert result == "complete"
+    assert all(argv[:3] == ["tmux", "-L", "iw_run42"] for argv in captured)
+    subcommands = [argv[3] for argv in captured]
+    assert {
+        "kill-session",
+        "new-session",
+        "set-buffer",
+        "paste-buffer",
+        "send-keys",
+        "capture-pane",
+    } <= set(subcommands)
+
+
 def test_find_schema_json_extracts_last_schema_valid_object():
     text = """
     noise {"verdict":"DONE","summary":"old"}

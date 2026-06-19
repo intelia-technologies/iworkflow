@@ -10,7 +10,7 @@ from iworkflow import (
     AgentResult, FakeProvider, Limits, Provider, Runner, WorkflowLimitError,
     get_recipe, list_recipes, run_spec,
 )
-from iworkflow.workflow import WorkflowError, WorkflowSpec, render
+from iworkflow.workflow import WorkflowError, WorkflowSpec, _eval_when, render
 
 
 class ScriptedProvider(Provider):
@@ -103,6 +103,214 @@ def test_command_step_emits_progress_events(tmp_path):
     assert events[-1]["exit_code"] == 0
 
 
+def test_top_level_when_parse_accepts_agent_and_leaves_missing_parallel_unchanged():
+    when = {"path": "steps.gate.value.ok", "truthy": True}
+    wf = WorkflowSpec.parse({"steps": [
+        {"id": "gate", "kind": "agent", "prefer": ["codex"], "prompt": "gate"},
+        {"id": "audit", "kind": "agent", "needs": ["gate"], "prefer": ["codex"],
+         "when": when, "prompt": "audit"},
+        {"id": "fan", "kind": "parallel", "needs": ["audit"], "agents": [
+            {"id": "a", "prefer": ["codex"], "prompt": "a"},
+        ]},
+    ]})
+
+    assert wf.steps[1].when == when
+    assert wf.steps[2].when is None
+
+
+def test_bad_when_on_top_level_steps_rejected_at_parse():
+    bad_specs = [
+        {"steps": [{
+            "id": "cmd",
+            "kind": "command",
+            "command": ["true"],
+            "when": {"path": "steps.x.value", "unknown_op": 1},
+        }]},
+        {"steps": [{
+            "id": "agent",
+            "kind": "agent",
+            "prompt": "agent",
+            "when": {"path": "steps.x.value", "unknown_op": 1},
+        }]},
+    ]
+
+    for spec in bad_specs:
+        with pytest.raises(WorkflowError) as exc_info:
+            WorkflowSpec.parse(spec)
+        message = str(exc_info.value)
+        assert "operator" in message
+        assert "eq" in message
+
+
+def test_agent_when_executes_when_true_and_skips_when_false_without_provider(tmp_path):
+    def responder(prompt, schema, i):
+        if i == 0:
+            return {"exit_code": 1}
+        return "audit-ran"
+
+    runner, provider = _scripted_runner(tmp_path, responder, run_id="conditional-agent-skip")
+    spec = {"steps": [
+        {"id": "build", "kind": "agent", "prefer": ["codex"],
+         "schema": {"type": "object", "properties": {"exit_code": {"type": "integer"}}},
+         "prompt": "build"},
+        {"id": "audit", "kind": "agent", "needs": ["build"], "prefer": ["codex"],
+         "when": {"path": "steps.build.value.exit_code", "eq": 0},
+         "prompt": "audit"},
+    ]}
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert provider._n == 1
+    steps_path = tmp_path / "runs" / "conditional-agent-skip" / "wf-steps.json"
+    steps = json.loads(steps_path.read_text(encoding="utf-8"))
+    assert steps["audit"] == {"skipped": True, "ok": True, "kind": "agent"}
+    events_path = tmp_path / "runs" / "conditional-agent-skip" / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert any(e["event"] == "skipped" and e["label"] == "audit" and e["kind"] == "agent"
+               for e in events)
+
+    def true_responder(prompt, schema, i):
+        if i == 0:
+            return {"exit_code": 0}
+        return "audit-ran"
+
+    true_runner, true_provider = _scripted_runner(
+        tmp_path, true_responder, run_id="conditional-agent-run")
+    true_out = _run(run_spec(true_runner, spec))
+    assert true_out["status"] == "DONE"
+    assert true_provider._n == 2
+    assert true_out["steps"]["audit"] == "audit-ran"
+
+
+def test_command_when_true_executes_and_false_skips(tmp_path):
+    runner, _ = _fake_runner(tmp_path, run_id="conditional-command")
+    spec = {"steps": [
+        {"id": "tests_ok", "kind": "command", "command": ["python3", "-c", "raise SystemExit(0)"]},
+        {"id": "deploy", "kind": "command", "needs": ["tests_ok"],
+         "when": {"path": "steps.tests_ok.value.exit_code", "eq": 0},
+         "command": ["python3", "-c", "print('deploy-ran')"]},
+        {"id": "tests_fail", "kind": "command", "needs": ["deploy"],
+         "command": ["python3", "-c", "raise SystemExit(1)"]},
+        {"id": "publish", "kind": "command", "needs": ["tests_fail"],
+         "when": {"path": "steps.tests_fail.value.exit_code", "eq": 0},
+         "command": ["python3", "-c", "print('publish-ran')"]},
+    ]}
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert out["steps"]["deploy"]["exit_code"] == 0
+    assert "skipped" not in out["steps"]["deploy"]
+    steps = json.loads((tmp_path / "runs" / "conditional-command" / "wf-steps.json")
+                       .read_text(encoding="utf-8"))
+    assert steps["publish"] == {"skipped": True, "ok": True, "kind": "command"}
+
+
+def test_skipped_step_satisfies_needs_and_downstream_can_inspect_skip(tmp_path):
+    seen = {}
+
+    def responder(prompt, schema, i):
+        seen[i] = prompt
+        if i == 0:
+            return {"ok": False}
+        return f"ran:{prompt}"
+
+    runner, provider = _scripted_runner(tmp_path, responder, run_id="conditional-needs")
+    spec = {"steps": [
+        {"id": "gate", "kind": "agent", "prefer": ["codex"],
+         "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+         "prompt": "gate"},
+        {"id": "audit", "kind": "agent", "needs": ["gate"], "prefer": ["codex"],
+         "when": {"path": "steps.gate.value.ok", "truthy": True},
+         "prompt": "audit"},
+        {"id": "report", "kind": "agent", "needs": ["audit"], "prefer": ["codex"],
+         "prompt": "report skipped={{steps.audit.skipped}} kind={{steps.audit.kind}}"},
+        {"id": "notify", "kind": "agent", "needs": ["audit"], "prefer": ["codex"],
+         "when": {"path": "steps.audit.skipped", "truthy": True},
+         "prompt": "notify"},
+    ]}
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert provider._n == 3
+    assert seen[1] == "report skipped=true kind=agent"
+    assert out["steps"]["report"] == "ran:report skipped=true kind=agent"
+    assert out["steps"]["notify"] == "ran:notify"
+
+
+def test_compound_when_over_multiple_steps_skips_when_false(tmp_path):
+    def responder(prompt, schema, i):
+        if "gate-a" in prompt:
+            return {"verdict": "PASS"}
+        if "gate-b" in prompt:
+            return {"score": 0.9}
+        return "route-ran"
+
+    runner, provider = _scripted_runner(tmp_path, responder, run_id="conditional-compound")
+    spec = {"steps": [
+        {"id": "a", "kind": "agent", "prefer": ["codex"],
+         "schema": {"type": "object", "properties": {"verdict": {"type": "string"}}},
+         "prompt": "gate-a"},
+        {"id": "b", "kind": "agent", "prefer": ["codex"],
+         "schema": {"type": "object", "properties": {"score": {"type": "number"}}},
+         "prompt": "gate-b"},
+        {"id": "route", "kind": "agent", "needs": ["a", "b"], "prefer": ["codex"],
+         "when": {"all": [
+             {"any": [
+                 {"path": "steps.a.value.verdict", "eq": "ISSUES"},
+                 {"path": "steps.b.value.score", "gte": 0.8},
+             ]},
+             {"path": "params.enabled", "truthy": True},
+         ]},
+         "prompt": "route"},
+    ]}
+
+    out = _run(run_spec(runner, spec, {"enabled": False}))
+
+    assert out["status"] == "DONE"
+    assert provider._n == 2
+    steps = json.loads((tmp_path / "runs" / "conditional-compound" / "wf-steps.json")
+                       .read_text(encoding="utf-8"))
+    assert steps["route"] == {"skipped": True, "ok": True, "kind": "agent"}
+
+
+def test_skipped_step_resume_uses_journal_without_reevaluating(tmp_path):
+    spec = {"steps": [
+        {"id": "lint", "kind": "agent", "prefer": ["codex"],
+         "when": {"path": "params.run_lint", "truthy": True},
+         "prompt": "lint"},
+    ]}
+
+    first_runner, first_provider = _scripted_runner(
+        tmp_path, lambda prompt, schema, i: "lint-ran", run_id="conditional-resume")
+    first = _run(run_spec(first_runner, spec, {"run_lint": False}))
+    assert first["status"] == "DONE"
+    assert first_provider._n == 0
+
+    second_runner, second_provider = _scripted_runner(
+        tmp_path, lambda prompt, schema, i: "lint-ran", run_id="conditional-resume")
+    second = _run(run_spec(second_runner, spec, {"run_lint": False}))
+
+    assert second["status"] == "DONE"
+    assert second_provider._n == 0
+    steps = json.loads((tmp_path / "runs" / "conditional-resume" / "wf-steps.json")
+                       .read_text(encoding="utf-8"))
+    assert steps["lint"] == {"skipped": True, "ok": True, "kind": "agent"}
+    events = [json.loads(line) for line in (tmp_path / "runs" / "conditional-resume" / "events.jsonl")
+              .read_text(encoding="utf-8").splitlines()]
+    assert [e["event"] for e in events].count("skipped") == 1
+
+
+def test_eval_when_is_pure_and_deterministic():
+    ctx = {"params": {}, "steps": {"a": {"value": {"score": 0.9}}}}
+    when = {"path": "steps.a.value.score", "gte": 0.8}
+
+    assert _eval_when(when, ctx) is True
+    assert _eval_when(when, ctx) is True
+
+
 def test_parallel_fans_out(tmp_path):
     runner, fake = _fake_runner(tmp_path)
     spec = {"steps": [{"id": "fan", "kind": "parallel", "agents": [
@@ -144,6 +352,60 @@ def test_gate_aborts_downstream(tmp_path):
     assert out["status"] == "ABORTED"
     assert out["aborted_at"] == "gate"
     assert "after" not in out["steps"]
+
+
+def test_executor_teardown_tmux_on_success(tmp_path):
+    runner, _ = _fake_runner(tmp_path, run_id="teardown-success")
+    calls = []
+
+    async def fake_teardown():
+        calls.append("called")
+
+    runner.teardown_tmux = fake_teardown
+    spec = {"steps": [{"id": "a", "kind": "agent", "prefer": ["codex"], "prompt": "ok"}]}
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert calls == ["called"]
+
+
+def test_executor_teardown_tmux_on_workflow_error(tmp_path):
+    provider = FakeProvider("codex", limit_first_n=99)
+    runner = Runner(
+        "teardown-error",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+    )
+    calls = []
+
+    async def fake_teardown():
+        calls.append("called")
+
+    runner.teardown_tmux = fake_teardown
+    spec = {
+        "steps": [{
+            "id": "critical",
+            "kind": "agent",
+            "prefer": ["codex"],
+            "prompt": "must work",
+        }]
+    }
+
+    with pytest.raises(WorkflowError):
+        _run(run_spec(runner, spec))
+
+    assert calls == ["called"]
+
+
+def test_executor_teardown_tmux_noop_without_claude_interactive(tmp_path):
+    runner, _ = _fake_runner(tmp_path, run_id="teardown-no-claude")
+    spec = {"steps": [{"id": "a", "kind": "agent", "prefer": ["codex"], "prompt": "ok"}]}
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
 
 
 # --- loops ----------------------------------------------------------------
@@ -675,6 +937,239 @@ def test_optional_agent_exhaustion_can_continue(tmp_path):
 
     assert out["status"] == "DONE"
     assert out["steps"]["best_effort"] is None
+
+
+def test_agent_schema_valid_value_marks_done_and_records_schema_ok(tmp_path):
+    schema = {
+        "type": "object",
+        "required": ["verdict"],
+        "properties": {"verdict": {"type": "string"}},
+    }
+
+    runner, _ = _scripted_runner(
+        tmp_path,
+        lambda prompt, schema, i: {"verdict": "PASS"},
+        run_id="schema-valid",
+    )
+    spec = {
+        "steps": [{
+            "id": "check",
+            "kind": "agent",
+            "prefer": ["codex"],
+            "schema": schema,
+            "prompt": "check",
+        }],
+        "output": "{{steps.check.value.verdict}}",
+    }
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert out["output"] == "PASS"
+    assert out["steps"]["check"] == {"verdict": "PASS"}
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "runs" / "schema-valid" / "events.jsonl").read_text().splitlines()
+    ]
+    assert "schema_mismatch" not in {event["event"] for event in events}
+    ledger = json.loads((tmp_path / "runs" / "schema-valid" / "ledger.jsonl").read_text())
+    assert ledger["schema_ok"] is True
+
+
+def test_required_agent_schema_mismatch_fails_workflow(tmp_path):
+    schema = {"type": "object", "required": ["verdict"]}
+    runner, _ = _scripted_runner(
+        tmp_path,
+        lambda prompt, schema, i: {"status": "ok"},
+        run_id="schema-required",
+    )
+    spec = {
+        "steps": [{
+            "id": "critical",
+            "kind": "agent",
+            "prefer": ["codex"],
+            "schema": schema,
+            "prompt": "must validate",
+        }]
+    }
+
+    with pytest.raises(WorkflowError) as exc_info:
+        _run(run_spec(runner, spec))
+
+    message = str(exc_info.value)
+    assert "agent step 'critical' exhausted" in message
+    assert "missing required key: 'verdict'" in message
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "runs" / "schema-required" / "events.jsonl").read_text().splitlines()
+    ]
+    assert any(event["event"] == "schema_mismatch" for event in events)
+
+
+def test_agent_schema_mismatch_fails_over_to_next_provider(tmp_path):
+    schema = {"type": "object", "required": ["score"]}
+
+    def responder(prompt, schema, i):
+        return {"result": "ok"} if i == 0 else {"score": 0.9}
+
+    runner, _ = _scripted_runner(tmp_path, responder, run_id="schema-failover")
+    spec = {
+        "steps": [{
+            "id": "grade",
+            "kind": "agent",
+            "prefer": ["codex", "gemini"],
+            "schema": schema,
+            "prompt": "grade",
+        }],
+        "output": {
+            "provider": "{{steps.grade.provider}}",
+            "score": "{{steps.grade.value.score}}",
+        },
+    }
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert out["output"] == {"provider": "gemini", "score": 0.9}
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "runs" / "schema-failover" / "events.jsonl").read_text().splitlines()
+    ]
+    mismatches = [event for event in events if event["event"] == "schema_mismatch"]
+    assert len(mismatches) == 1
+    assert mismatches[0]["provider"] == "codex"
+    assert mismatches[0]["why"] == "missing required key: 'score'"
+
+
+def test_optional_agent_schema_mismatch_continues_with_null(tmp_path):
+    schema = {"type": "object", "required": ["verdict"]}
+
+    def responder(prompt, schema, i):
+        return {"status": "ok"} if prompt == "try" else "continued"
+
+    runner, _ = _scripted_runner(tmp_path, responder, run_id="schema-optional")
+    spec = {
+        "steps": [
+            {
+                "id": "best_effort",
+                "kind": "agent",
+                "prefer": ["codex"],
+                "required": False,
+                "schema": schema,
+                "prompt": "try",
+            },
+            {
+                "id": "after",
+                "kind": "agent",
+                "needs": ["best_effort"],
+                "prefer": ["codex"],
+                "prompt": "after",
+            },
+        ],
+        "output": {
+            "best_effort_ok": "{{steps.best_effort.ok}}",
+            "after": "{{steps.after.value}}",
+        },
+    }
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert out["steps"]["best_effort"] is None
+    assert out["output"] == {"best_effort_ok": False, "after": "continued"}
+
+
+def test_agent_without_schema_does_not_validate_value(tmp_path):
+    runner, _ = _scripted_runner(
+        tmp_path,
+        lambda prompt, schema, i: {"status": "ok"},
+        run_id="schema-absent",
+    )
+    spec = {
+        "steps": [{
+            "id": "freeform",
+            "kind": "agent",
+            "prefer": ["codex"],
+            "prompt": "no schema",
+        }]
+    }
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert out["steps"]["freeform"] == {"status": "ok"}
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "runs" / "schema-absent" / "events.jsonl").read_text().splitlines()
+    ]
+    assert "schema_mismatch" not in {event["event"] for event in events}
+    ledger = json.loads((tmp_path / "runs" / "schema-absent" / "ledger.jsonl").read_text())
+    assert ledger["schema_ok"] is None
+
+
+def test_parallel_schema_mismatch_marks_subresult_failed(tmp_path):
+    schema = {"type": "object", "required": ["verdict"]}
+
+    def responder(prompt, schema, i):
+        return {"verdict": "PASS"} if prompt == "agent a" else {}
+
+    runner, _ = _scripted_runner(tmp_path, responder, run_id="schema-parallel")
+    spec = {
+        "steps": [{
+            "id": "fan",
+            "kind": "parallel",
+            "agents": [
+                {"id": "a", "prefer": ["codex"], "schema": schema, "prompt": "agent a"},
+                {"id": "b", "prefer": ["codex"], "schema": schema, "prompt": "agent b"},
+            ],
+        }],
+        "output": "{{steps.fan.ok}}",
+    }
+
+    out = _run(run_spec(runner, spec))
+
+    assert out["status"] == "DONE"
+    assert out["output"] is False
+    assert out["steps"]["fan"][0]["ok"] is True
+    assert out["steps"]["fan"][1]["ok"] is False
+    assert out["steps"]["fan"][1]["value"] is None
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "runs" / "schema-parallel" / "events.jsonl").read_text().splitlines()
+    ]
+    mismatches = [event for event in events if event["event"] == "schema_mismatch"]
+    assert [event["label"] for event in mismatches] == ["fan:b"]
+
+
+def test_pipeline_schema_mismatch_marks_item_failed(tmp_path):
+    schema = {"type": "object", "required": ["verdict"]}
+
+    def responder(prompt, schema, i):
+        return {"verdict": "PASS"} if prompt == "review good" else {}
+
+    runner, _ = _scripted_runner(tmp_path, responder, run_id="schema-pipeline")
+    spec = {
+        "steps": [{
+            "id": "pipe",
+            "kind": "pipeline",
+            "items": "{{params.items}}",
+            "stages": [{
+                "id": "review",
+                "prefer": ["codex"],
+                "schema": schema,
+                "prompt": "review {{item}}",
+            }],
+        }],
+        "output": "{{steps.pipe.ok}}",
+    }
+
+    out = _run(run_spec(runner, spec, {"items": ["good", "bad"]}))
+
+    assert out["status"] == "DONE"
+    assert out["output"] is False
+    assert out["steps"]["pipe"][0]["ok"] is True
+    assert out["steps"]["pipe"][1]["ok"] is False
+    assert out["steps"]["pipe"][1]["value"] is None
 
 
 def test_required_artifact_missing_fails_workflow(tmp_path):

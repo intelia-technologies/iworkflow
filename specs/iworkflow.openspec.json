@@ -457,6 +457,10 @@
                 "type": "string"
               }
             },
+            "when": {
+              "description": "Optional conditional routing guard evaluated before dispatch.",
+              "$ref": "#/types/When"
+            },
             "agent": {
               "$ref": "#/types/AgentSpec"
             },
@@ -540,6 +544,10 @@
                 "type": "string"
               }
             },
+            "when": {
+              "description": "Optional conditional routing guard evaluated before dispatch.",
+              "$ref": "#/types/When"
+            },
             "agents": {
               "type": "array",
               "items": {
@@ -571,6 +579,10 @@
               "items": {
                 "type": "string"
               }
+            },
+            "when": {
+              "description": "Optional conditional routing guard evaluated before dispatch.",
+              "$ref": "#/types/When"
             },
             "items": {
               "oneOf": [
@@ -614,6 +626,10 @@
               "items": {
                 "type": "string"
               }
+            },
+            "when": {
+              "description": "Optional conditional routing guard evaluated before dispatch.",
+              "$ref": "#/types/When"
             },
             "body": {
               "type": "array",
@@ -729,6 +745,10 @@
               "items": {
                 "type": "string"
               }
+            },
+            "when": {
+              "description": "Optional conditional routing guard evaluated before dispatch.",
+              "$ref": "#/types/When"
             },
             "command": {
               "oneOf": [
@@ -935,6 +955,47 @@
         "steps"
       ],
       "additionalProperties": true
+    }
+  },
+  "capabilities": {
+    "schema-validation": {
+      "summary": "Engine-side validation of agent schema outputs before DONE.",
+      "description": "When AgentSpec.schema is defined, the runner validates the complete provider value before recording the agent as DONE. Schema mismatches are treated like provider failures so failover, required semantics, and compound-step ok aggregation remain deterministic.",
+      "requirements": [
+        "When AgentSpec.schema is not null and a provider returns a value, the engine validates the full value with minijsonschema.validate before emitting or recording DONE.",
+        "When validation fails, the engine emits schema_mismatch with label, provider, and why, records the attempt as SCHEMA_MISMATCH, and tries the next routed or preferred provider.",
+        "If every provider mismatches, required=true raises a workflow error for a sequential agent and required=false continues with value=null and ok=false.",
+        "Parallel and pipeline subagents validate independently; any invalid subresult has ok=false and makes the aggregate step ok=false.",
+        "Ledger records include schema_ok: true when a schema-defined result passed validation, false when schema-defined execution exhausted without a valid result, and null when no schema was requested."
+      ]
+    },
+    "tmux-isolation": {
+      "summary": "Per-run tmux socket isolation for Claude interactive workers.",
+      "description": "ClaudeInteractiveProvider can run all tmux commands through a dedicated socket name. Runner assigns the canonical socket iw_{run_id} to ClaudeInteractiveProvider instances and the workflow executor tears down that server when the run finishes.",
+      "requirements": [
+        "When ClaudeInteractiveProvider.tmux_socket is set, every internal tmux invocation uses argv prefix [\"tmux\", \"-L\", \"<tmux_socket>\"] before the subcommand.",
+        "When ClaudeInteractiveProvider.tmux_socket is null, tmux uses the default server without a -L flag.",
+        "Runner injects tmux_socket=\"iw_{run_id}\" into ClaudeInteractiveProvider instances during construction.",
+        "Runner.teardown_tmux() destroys the per-run server with tmux -L iw_{run_id} kill-server and suppresses missing-server errors.",
+        "The workflow executor invokes runner.teardown_tmux() during finalization on success, abort, error, or cancellation."
+      ]
+    },
+    "worktree-isolation": {
+      "summary": "Automatic git worktree isolation for write-capable parallel and pipeline agents.",
+      "description": "Write-capable AgentSpecs inside parallel and pipeline steps run in a deterministic temporary git worktree keyed by run_id, step_id, and agent_id. The executor validates write_paths inside that worktree, squashes successful changes back into the base working tree, and removes the worktree in all outcomes.",
+      "requires_git": true,
+      "applies_to": [
+        "parallel",
+        "pipeline"
+      ],
+      "requirements": [
+        "The executor creates one worktree under the system temp directory for each AgentSpec in a parallel or pipeline step where sandbox is not read-only or tools includes write.",
+        "Read-only agents in the same compound step continue to run in the runner default cwd without worktree creation.",
+        "When isolated, git dirty-path checks and write_paths validation run with the worktree as cwd.",
+        "On successful write-capable completion, the executor stages and commits worktree changes, applies git merge --squash from the base cwd, commits staged base changes with git commit --no-edit, and returns the agent result only after consolidation.",
+        "The executor removes isolated worktrees with git worktree remove --force in a finally block for success, provider failure, validation failure, and exceptions.",
+        "If the base cwd is not inside a git repository, a write-capable parallel or pipeline agent fails before any provider call with a descriptive WorkflowError."
+      ]
     }
   },
   "actions": {

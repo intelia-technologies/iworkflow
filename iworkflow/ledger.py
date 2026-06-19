@@ -47,6 +47,7 @@ class LedgerRecord:
     error_class: str | None
     retry_after: float | None
     # telemetry for analysis / agent crystallization (added 0.2; optional):
+    schema_ok: bool | None = None                  # None when no schema was requested
     kind: str | None = None                          # routing decision (inferred/role/explicit)
     tools: list[str] = field(default_factory=list)   # tool/skill names injected for this agent
     input_tokens: int | None = None                  # provider-reported usage (best-effort)

@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from iworkflow import FakeProvider, Provider, Runner
+from iworkflow import ClaudeInteractiveProvider, FakeProvider, Provider, Runner
 
 
 class CwdRecordingProvider(Provider):
@@ -12,6 +12,15 @@ class CwdRecordingProvider(Provider):
     async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None, model=None):
         self.cwd = cwd
         return {"verdict": "DONE", "summary": prompt}
+
+
+class StaticProvider(Provider):
+    def __init__(self, name, value):
+        super().__init__(name)
+        self.value = value
+
+    async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None, model=None):
+        return self.value
 
 
 def test_per_provider_semaphore_cap(tmp_path):
@@ -93,6 +102,134 @@ def test_agent_emits_prompt_before_dispatch_and_model_on_done(tmp_path):
     assert events[1]["prompt_sha"]
     assert events[2]["model"] == "gpt-5.1-codex-mini"
     assert events[3]["model"] == "gpt-5.1-codex-mini"
+
+
+def test_schema_mismatch_event_contains_diagnostic_and_ledger_schema_ok(tmp_path):
+    provider = StaticProvider("codex", {"result": "ok"})
+    runner = Runner(
+        "schema-event",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+    )
+    schema = {"type": "object", "required": ["score"]}
+
+    result = asyncio.run(
+        runner.agent("score it", label="judge", prefer=["codex"], schema=schema)
+    )
+
+    assert result.status == "EXHAUSTED"
+    assert result.schema_ok is False
+    events_path = tmp_path / "runs" / "schema-event" / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    mismatch = next(event for event in events if event["event"] == "schema_mismatch")
+    assert mismatch["label"] == "judge"
+    assert mismatch["provider"] == "codex"
+    assert mismatch["why"] == "missing required key: 'score'"
+    ledger = json.loads((tmp_path / "runs" / "schema-event" / "ledger.jsonl").read_text())
+    assert ledger["schema_ok"] is False
+    assert ledger["attempts"] == [{
+        "provider": "codex",
+        "outcome": "SCHEMA_MISMATCH",
+        "detail": "missing required key: 'score'",
+    }]
+
+
+def test_provider_side_schema_error_is_schema_mismatch_event(tmp_path):
+    provider = FakeProvider("codex")
+    runner = Runner(
+        "schema-provider-error",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+    )
+    schema = {"type": "object", "required": ["score"]}
+
+    result = asyncio.run(
+        runner.agent("score it", label="judge", prefer=["codex"], schema=schema)
+    )
+
+    assert result.status == "EXHAUSTED"
+    events_path = tmp_path / "runs" / "schema-provider-error" / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    mismatch = next(event for event in events if event["event"] == "schema_mismatch")
+    assert mismatch["provider"] == "codex"
+    assert mismatch["why"] == "missing required key: 'score'"
+
+
+def test_runner_injects_tmux_socket(tmp_path):
+    provider = ClaudeInteractiveProvider("claude")
+
+    runner = Runner(
+        "myrun",
+        {"claude": provider},
+        {"claude": 1},
+        journal_dir=str(tmp_path),
+    )
+
+    assert runner.providers["claude"].tmux_socket == "iw_myrun"
+
+
+def test_runner_does_not_add_tmux_socket_to_non_claude_provider(tmp_path):
+    fake = FakeProvider("fake")
+    claude = ClaudeInteractiveProvider("claude")
+
+    runner = Runner(
+        "x",
+        {"fake": fake, "claude": claude},
+        {"fake": 1, "claude": 1},
+        journal_dir=str(tmp_path),
+    )
+
+    assert not hasattr(runner.providers["fake"], "tmux_socket")
+    assert runner.providers["claude"].tmux_socket == "iw_x"
+
+
+def test_runner_teardown_tmux_called(tmp_path, monkeypatch):
+    captured = []
+
+    class FakeProcess:
+        returncode = 1
+
+        async def communicate(self):
+            return b"", b"server not found"
+
+    async def fake_create_subprocess_exec(*argv, **_kwargs):
+        captured.append(list(argv))
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "iworkflow.scheduler.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    runner = Runner(
+        "abc",
+        {"claude": ClaudeInteractiveProvider("claude")},
+        {"claude": 1},
+        journal_dir=str(tmp_path),
+    )
+
+    asyncio.run(runner.teardown_tmux())
+
+    assert captured == [["tmux", "-L", "iw_abc", "kill-server"]]
+
+
+def test_runner_teardown_tmux_is_noop_without_claude_interactive(tmp_path, monkeypatch):
+    async def fake_create_subprocess_exec(*_argv, **_kwargs):
+        raise AssertionError("tmux should not be invoked without a ClaudeInteractiveProvider")
+
+    monkeypatch.setattr(
+        "iworkflow.scheduler.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    runner = Runner(
+        "no-claude",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+    )
+
+    asyncio.run(runner.teardown_tmux())
 
 
 

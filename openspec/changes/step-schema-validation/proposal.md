@@ -27,3 +27,8 @@ El resultado: un paso que depende de `{{steps.prev.value.field}}` puede fallar c
 - **Providers afectados**: todos por igual; GeminiProvider (sin schema nativo) es el beneficiario principal porque hoy puede devolver JSON malformado sin detección.
 - **Rendimiento**: la validación es síncrona y O(campos); coste despreciable frente a la latencia del CLI.
 - **Tests**: se añaden casos con `FakeProvider` / `ScriptedProvider` que devuelven valores inválidos para cobrir los tres caminos (ok, mismatch+failover, mismatch+exhausted).
+
+## Grounding: PydanticAI
+
+- PydanticAI usa el `output_type` para construir un JSON Schema y validar los datos estructurados devueltos por el modelo antes de exponer `result.output`; esa separación entre "pedir formato" y "validar el dato recibido" es el patrón que esta change aplica en el motor. Fuente: <https://pydantic.dev/docs/ai/core-concepts/output/#structured-output-data>.
+- En el camino de JSON Schema personalizado, PydanticAI advierte que el objeto JSON recibido no se valida automáticamente y recomienda validadores de output para rechazar respuestas inválidas/reintentar; esto justifica que iworkflow no delegue la seguridad del contrato al prompt o al provider. Fuente: <https://pydantic.dev/docs/ai/core-concepts/output/#custom-json-schema>.

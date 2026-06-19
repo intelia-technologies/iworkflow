@@ -596,7 +596,7 @@ class FakeProvider(Provider):
             if schema:
                 ok, why = validate(payload, schema)
                 if not ok:
-                    raise ProviderError(why)
+                    raise ProviderError(f"schema mismatch: {why}")
             return payload
         finally:
             self._active -= 1
@@ -631,11 +631,16 @@ class ClaudeInteractiveProvider(Provider):
     supports_schema: bool = False
     permission_mode: str | None = None  # None = omit (answer mode); plan for write tasks
     poll_s: float = 3.0
+    tmux_socket: str | None = None
     _seq: int = field(default=0, init=False)
 
     async def _tmux(self, *args: str) -> str:
+        argv = ["tmux"]
+        if self.tmux_socket is not None:
+            argv.extend(["-L", self.tmux_socket])
+        argv.extend(args)
         proc = await asyncio.create_subprocess_exec(
-            "tmux", *args,
+            *argv,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         out, _ = await proc.communicate()
         return out.decode(errors="replace")

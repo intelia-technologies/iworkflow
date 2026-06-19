@@ -20,7 +20,8 @@ from typing import Any, Awaitable, Callable
 
 from .ledger import LedgerRecord, RunLedger, sha
 from .learn import adjust_order
-from .providers import Provider, ProviderError, RateLimited
+from .minijsonschema import validate
+from .providers import ClaudeInteractiveProvider, Provider, ProviderError, RateLimited
 from .routing import KIND_ROUTES as ROUTES  # noqa: F401 — re-exported as iworkflow.ROUTES
 from .routing import route
 from .stats import provider_stats
@@ -34,7 +35,7 @@ def log(msg: str) -> None:
 @dataclass
 class Attempt:
     provider: str
-    outcome: str          # DONE | RATE_LIMITED | ERROR | TIMEOUT
+    outcome: str          # DONE | RATE_LIMITED | ERROR | TIMEOUT | SCHEMA_MISMATCH
     detail: str = ""
 
 
@@ -49,6 +50,7 @@ class AgentResult:
     prompt_sha: str | None = None
     timeout: bool = False
     last_heartbeat: float | None = None
+    schema_ok: bool | None = None
 
     @property
     def ok(self) -> bool:
@@ -68,6 +70,12 @@ class Runner:
                  default_cwd: str | None = None):
         self.run_id = run_id
         self.providers = providers
+        self._tmux_socket = f"iw_{run_id}"
+        self._teardown_tmux_server = False
+        for provider in self.providers.values():
+            if isinstance(provider, ClaudeInteractiveProvider):
+                provider.tmux_socket = self._tmux_socket
+                self._teardown_tmux_server = True
         self.catalog = catalog
         self.default_cwd = default_cwd
         self.journal_dir = journal_dir
@@ -81,7 +89,10 @@ class Runner:
         self._done: dict[str, AgentResult] = self._load_done()
 
     def _emit(self, label: str, event: str, **fields: Any) -> None:
-        """Append a structured telemetry event (the full execution trace)."""
+        """Append a structured telemetry event (the full execution trace).
+
+        `schema_mismatch` carries `label`, `provider`, and `why`.
+        """
         rec = {"ts": time.time(), "run_id": self.run_id, "label": label,
                "event": event, **fields}
         with self._events_path.open("a", encoding="utf-8") as fh:
@@ -93,11 +104,28 @@ class Runner:
                                    value=rec.get("value"), resumed=True,
                                    prompt_sha=rec.get("prompt_sha"),
                                    timeout=rec.get("timeout", False),
-                                   last_heartbeat=rec.get("last_heartbeat"))
+                                   last_heartbeat=rec.get("last_heartbeat"),
+                                   schema_ok=rec.get("schema_ok"))
                 for label, rec in self.ledger.load_done().items()}
         if done:
             log(f"resume: {len(done)} agent(s) recovered from ledger {self.ledger.path}")
         return done
+
+    async def teardown_tmux(self) -> None:
+        if not self._teardown_tmux_server:
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "tmux",
+                "-L",
+                self._tmux_socket,
+                "kill-server",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+        except OSError:
+            return
 
     def _record(self, res: AgentResult, *, prompt: str, schema: dict | None,
                 attempts: list[Attempt], t_start: float,
@@ -110,13 +138,14 @@ class Runner:
             provider=res.provider, value=res.value,
             attempts=[{"provider": a.provider, "outcome": a.outcome, "detail": a.detail}
                       for a in attempts],
-            prompt_sha=sha(prompt), schema_sha=sha(schema) if schema else None,
+            prompt_sha=sha(prompt), schema_sha=sha(schema) if schema is not None else None,
             ts_start=t_start, ts_end=time.time(),
             error_class=(attempts[-1].outcome if res.status == "EXHAUSTED" and attempts
                          else None),
             retry_after=None, kind=kind, tools=list(tools),
             input_tokens=u.get("input_tokens"), output_tokens=u.get("output_tokens"),
             cost_usd=u.get("cost_usd"), model=model or u.get("model"),
+            schema_ok=(None if schema is None else bool(res.schema_ok)),
             extra={"timeout": res.timeout, "last_heartbeat": res.last_heartbeat}))
 
     # --- the agent() primitive -------------------------------------------
@@ -256,9 +285,18 @@ class Runner:
 
                     # read usage immediately (no await between → race-free in asyncio)
                     usage = getattr(prov, "last_usage", None) or {}
+                    schema_ok = None
+                    if schema is not None:
+                        schema_ok, mismatch = validate(value, schema)
+                        if not schema_ok:
+                            attempts.append(Attempt(name, "SCHEMA_MISMATCH", mismatch[:120]))
+                            log(f"SCHEMA  {label} ✗ {name}: {mismatch[:80]} → failover")
+                            self._emit(label, "schema_mismatch", provider=name, why=mismatch)
+                            continue
                     attempts.append(Attempt(name, "DONE"))
                     res = AgentResult(label, "DONE", name, value, attempts, 
-                                      prompt_sha=prompt_hash, last_heartbeat=last_heartbeat)
+                                      prompt_sha=prompt_hash, last_heartbeat=last_heartbeat,
+                                      schema_ok=schema_ok)
                     self._done[label] = res      # within-process dedup, not just cross-process
                     self._record(res, prompt=prompt, schema=schema, attempts=attempts,
                                  t_start=t_start, kind=why, tools=tool_names, usage=usage,
@@ -290,9 +328,16 @@ class Runner:
                 except ProviderError as e:
                     if heartbeat_task:
                         heartbeat_task.cancel()
-                    attempts.append(Attempt(name, "ERROR", str(e)[:120]))
+                    detail = str(e)
+                    if schema is not None and detail.startswith("schema mismatch:"):
+                        why_detail = detail.split("schema mismatch:", 1)[1].strip() or detail
+                        attempts.append(Attempt(name, "SCHEMA_MISMATCH", why_detail[:120]))
+                        log(f"SCHEMA  {label} ✗ {name}: {why_detail[:80]} → failover")
+                        self._emit(label, "schema_mismatch", provider=name, why=why_detail)
+                        continue
+                    attempts.append(Attempt(name, "ERROR", detail[:120]))
                     log(f"ERROR    {label} ✗ {name}: {str(e)[:80]} → failover")
-                    self._emit(label, "error", provider=name, detail=str(e)[:120])
+                    self._emit(label, "error", provider=name, detail=detail[:120])
                     continue
                 finally:
                     if heartbeat_task and not heartbeat_task.done():
@@ -300,7 +345,8 @@ class Runner:
 
         res = AgentResult(label, "EXHAUSTED", None, None, attempts, 
                           timeout=(attempts[-1].outcome == "TIMEOUT" if attempts else False),
-                          last_heartbeat=last_heartbeat)
+                          last_heartbeat=last_heartbeat,
+                          schema_ok=(False if schema is not None else None))
         self._record(res, prompt=prompt, schema=schema, attempts=attempts,
                      t_start=t_start, kind=why, tools=tool_names)
         self._emit(label, "exhausted", attempts=[a.provider for a in attempts])
