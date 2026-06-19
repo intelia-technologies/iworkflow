@@ -296,7 +296,7 @@ def _cmd_graph(name: str | None, spec_path: str | None, html_path: str | None,
     import tempfile
     import webbrowser
     from .recipes import get_recipe
-    from .graph import spec_to_mermaid, spec_to_html
+    from .graph import MermaidValidationError, spec_to_mermaid, spec_to_html
 
     if spec_path:
         spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
@@ -315,12 +315,21 @@ def _cmd_graph(name: str | None, spec_path: str | None, html_path: str | None,
     # styled graphs, so the default emits a self-contained HTML file that
     # mermaid.js renders in a browser instead.
     if mermaid:
+        try:
+            mermaid_code = spec_to_mermaid(spec)
+        except MermaidValidationError as e:
+            print(f"Invalid generated Mermaid: {e}")
+            return
         print("```mermaid")
-        print(spec_to_mermaid(spec))
+        print(mermaid_code)
         print("```")
         return
 
-    html_content = spec_to_html(spec)
+    try:
+        html_content = spec_to_html(spec)
+    except MermaidValidationError as e:
+        print(f"Invalid generated Mermaid: {e}")
+        return
 
     if publish:
         with tempfile.TemporaryDirectory() as tmpdir:

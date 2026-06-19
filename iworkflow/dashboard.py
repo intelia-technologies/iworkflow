@@ -178,6 +178,25 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     let baseMermaid = '';
     let currentData = { events: [], steps: {}, spec: null };
 
+    function fnv1a32(text) {
+      let h = 0x811c9dc5;
+      const bytes = new TextEncoder().encode(String(text || 'node'));
+      for (const b of bytes) {
+        h ^= b;
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      return h.toString(16).padStart(8, '0');
+    }
+
+    function mermaidNodeId(value) {
+      const raw = String(value || 'node');
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) return raw;
+      let sanitized = raw.replace(/[^A-Za-z0-9_]/g, '_').replace(/^_+|_+$/g, '') || 'node';
+      if (!/^[A-Za-z_]/.test(sanitized)) sanitized = `n_${sanitized}`;
+      return `${sanitized}_${fnv1a32(raw)}`;
+    }
+
+
     window.selectStep = function(stepId) {
       selectedStepId = stepId;
       const step = findStepInSpec(stepId);
@@ -421,6 +440,15 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         wireGraphClicks();
       } catch (err) {
         console.error("Mermaid render error:", err);
+        container.innerHTML = `
+          <div class="text-left max-w-full rounded-lg border border-red-200 bg-red-50 p-4 text-red-900">
+            <div class="font-semibold">Mermaid render error</div>
+            <pre class="mt-2 whitespace-pre-wrap text-xs">${String(err?.message || err)}</pre>
+            <details class="mt-3">
+              <summary class="cursor-pointer text-sm font-medium">Generated Mermaid source</summary>
+              <pre class="mt-2 max-h-80 overflow-auto whitespace-pre text-xs">${escapeHtml(code)}</pre>
+            </details>
+          </div>`;
       }
 
       // Update Header stats
@@ -567,6 +595,12 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         return {kind: 'tool', text: 'Fragmento stdout del CLI compactado'};
       }
       return {kind: 'raw', text: `[${ev.stream || 'stdout'}] ${line}`};
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
     }
 
     function formatOutputEvent(ev) {

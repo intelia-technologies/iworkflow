@@ -197,6 +197,46 @@ def test_cmd_graph_html(tmp_path, monkeypatch):
     assert "mermaid" in content
 
 
+def test_graph_sanitizes_hyphenated_step_ids():
+    from iworkflow.graph import spec_to_mermaid, validate_mermaid
+
+    code = spec_to_mermaid({
+        "name": "review-history-audit",
+        "steps": [
+            {"id": "review-history-audit", "kind": "agent", "prompt": "audit"},
+            {"id": "compare.results", "kind": "command", "needs": ["review-history-audit"]},
+        ],
+    })
+
+    validate_mermaid(code)
+    assert "review-history-audit" in code  # human label preserved
+    assert "review_history_audit_" in code  # internal id sanitized
+    assert 'review-history-audit["' not in code
+    assert "compare_results_" in code
+
+
+def test_mermaid_validator_reports_bad_generated_ids():
+    from iworkflow.graph import MermaidValidationError, validate_mermaid
+
+    with pytest.raises(MermaidValidationError, match="line 2"):
+        validate_mermaid('graph TD\n    review-history-audit["bad"]')
+
+
+def test_cmd_graph_reports_mermaid_validation_error(capsys, monkeypatch):
+    import iworkflow.graph as graph
+    from iworkflow.cli import _cmd_graph
+
+    def bad_graph(spec):
+        raise graph.MermaidValidationError("line 2: bad id")
+
+    monkeypatch.setattr(graph, "spec_to_mermaid", bad_graph)
+    _cmd_graph("review", spec_path=None, html_path=None, publish=False, recipe_dir=None, mermaid=True)
+
+    captured = capsys.readouterr()
+    assert "Invalid generated Mermaid: line 2: bad id" in captured.out
+    assert "```mermaid" not in captured.out
+
+
 def test_cli_run_forwards_allow_tools(monkeypatch, tmp_path):
     calls = []
 

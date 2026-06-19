@@ -484,6 +484,8 @@ def test_dashboard_server_api_endpoints(tmp_path):
     assert "providerModelForEvent" in HTML_DASHBOARD
     assert "checkpoint_pending" in HTML_DASHBOARD
     assert "classDef paused" in HTML_DASHBOARD
+    assert "mermaidNodeId" in HTML_DASHBOARD
+    assert "Generated Mermaid source" in HTML_DASHBOARD
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("localhost", 0))
