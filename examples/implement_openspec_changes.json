@@ -1,6 +1,6 @@
 {
   "name": "implement_openspec_changes",
-  "description": "Implementa secuencialmente las 4 OpenSpec changes (issues #5-#8). Secuencial por contención de escritura en workflow.py/scheduler.py; verificación dura con make validate; auditoría independiente con Gemini.",
+  "description": "Implementa secuencialmente las 4 OpenSpec changes (issues #5-#8). Secuencial por contención de escritura en workflow.py/scheduler.py; codex-first (doer estructurado), gemini failover; write-guard + make validate + auditoría Gemini.",
   "schemas": {
     "impl_result": {
       "type": "object",
@@ -66,8 +66,8 @@
       "id": "impl_tmux_isolation",
       "kind": "agent",
       "prefer": [
-        "gemini",
-        "codex"
+        "codex",
+        "gemini"
       ],
       "sandbox": "write",
       "timeout_s": 1800,
@@ -85,17 +85,14 @@
         "docs/USING_IWORKFLOW.md",
         "openspec/changes/tmux-socket-isolation"
       ],
-      "prompt": "Implementa la OpenSpec change `tmux-socket-isolation` (GitHub issue #5) en el repo iworkflow.\n\nOBJETIVO: Aislar tmux por run: enrutar todo tmux de ClaudeInteractiveProvider a un socket dedicado `tmux -L iw_{run_id}` y matar el servidor de socket al terminar el run.\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/tmux-socket-isolation/proposal.md  (Why / What Changes / Impact)\n- openspec/changes/tmux-socket-isolation/specs/  (requisitos SHALL/MUST + escenarios WHEN/THEN: son tu contrato)\n- openspec/changes/tmux-socket-isolation/tasks.md  (checklist de implementación; marca [x] lo que completes)\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs, nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en el control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS DE LA TAREA:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` debe quedar cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/ (uno por escenario observable).\n3. Actualiza el contrato público specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si el cambio toca la superficie pública.\n4. Reutiliza patrones existentes; NO introduzcas una segunda convención junto a una ya presente. NO dejes shims ni código muerto.\n5. Ejecuta SOLO tus tests nuevos/tocados para smoke local (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes el `make validate` completo: lo corre el paso de verificación del workflow.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; verdict=BLOCKED si falta un prerrequisito real (explícalo en summary)."
+      "prompt": "Implementa la OpenSpec change `tmux-socket-isolation` (GitHub issue #5) en el repo iworkflow (cwd = raíz del repo).\n\nOBJETIVO: Aislar tmux por run: ClaudeInteractiveProvider enruta todo tmux a `tmux -L iw_{run_id}` y mata el servidor de socket al terminar el run.\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/tmux-socket-isolation/proposal.md\n- openspec/changes/tmux-socket-isolation/specs/   (requisitos SHALL/MUST + escenarios WHEN/THEN: tu contrato)\n- openspec/changes/tmux-socket-isolation/tasks.md  (marca [x] lo completado)\n\n⚠️ RESTRICCIÓN DE FICHEROS — CRÍTICA Y NO NEGOCIABLE:\nSolo puedes CREAR o EDITAR ficheros dentro de estas rutas:\n   - iworkflow/ (solo los .py que tu change requiera)\n   - tests/ (tests nuevos o existentes)\n   - specs/iworkflow.openspec.json\n   - docs/USING_IWORKFLOW.md\n   - openspec/changes/tmux-socket-isolation/\nPROHIBIDO ABSOLUTAMENTE: crear o editar CUALQUIER otro fichero. Nada de ficheros scratch, temporales, capturas (.png), .html, .json de scraping, `scripts/`, ni artefactos de exploración. Para explorar usa SOLO lectura. Si escribes fuera de esta lista, el motor aborta TODO el workflow y tu trabajo se descarta.\n\nALCANCE: implementa Única y exclusivamente la change `tmux-socket-isolation`. NO toques el alcance de otras changes (tmux/schema/conditional/worktree) más allá de lo que tu propia change requiera.\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs; nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/.\n3. Actualiza specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si tocas la superficie pública.\n4. Reutiliza patrones existentes; NO crees una segunda convención; NO dejes código muerto ni shims.\n5. Smoke local SOLO de tus tests tocados (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes `make validate` completo.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; BLOCKED si falta un prerrequisito real (explícalo)."
     },
     {
       "id": "impl_schema_validation",
       "kind": "agent",
-      "needs": [
-        "impl_tmux_isolation"
-      ],
       "prefer": [
-        "gemini",
-        "codex"
+        "codex",
+        "gemini"
       ],
       "sandbox": "write",
       "timeout_s": 1800,
@@ -113,17 +110,17 @@
         "docs/USING_IWORKFLOW.md",
         "openspec/changes/step-schema-validation"
       ],
-      "prompt": "Implementa la OpenSpec change `step-schema-validation` (GitHub issue #6) en el repo iworkflow.\n\nOBJETIVO: Validación de schema en el motor: cuando AgentSpec.schema esté definido, _exec_agent debe validar res.value completo con minijsonschema.validate antes de marcar DONE; mismatch = fallo de paso (failover/required).\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/step-schema-validation/proposal.md  (Why / What Changes / Impact)\n- openspec/changes/step-schema-validation/specs/  (requisitos SHALL/MUST + escenarios WHEN/THEN: son tu contrato)\n- openspec/changes/step-schema-validation/tasks.md  (checklist de implementación; marca [x] lo que completes)\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs, nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en el control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS DE LA TAREA:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` debe quedar cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/ (uno por escenario observable).\n3. Actualiza el contrato público specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si el cambio toca la superficie pública.\n4. Reutiliza patrones existentes; NO introduzcas una segunda convención junto a una ya presente. NO dejes shims ni código muerto.\n5. Ejecuta SOLO tus tests nuevos/tocados para smoke local (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes el `make validate` completo: lo corre el paso de verificación del workflow.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; verdict=BLOCKED si falta un prerrequisito real (explícalo en summary)."
+      "prompt": "Implementa la OpenSpec change `step-schema-validation` (GitHub issue #6) en el repo iworkflow (cwd = raíz del repo).\n\nOBJETIVO: Validación de schema en el motor: cuando AgentSpec.schema esté definido, _exec_agent valida res.value completo con minijsonschema.validate antes de DONE; mismatch = fallo de paso (failover/required).\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/step-schema-validation/proposal.md\n- openspec/changes/step-schema-validation/specs/   (requisitos SHALL/MUST + escenarios WHEN/THEN: tu contrato)\n- openspec/changes/step-schema-validation/tasks.md  (marca [x] lo completado)\n\n⚠️ RESTRICCIÓN DE FICHEROS — CRÍTICA Y NO NEGOCIABLE:\nSolo puedes CREAR o EDITAR ficheros dentro de estas rutas:\n   - iworkflow/ (solo los .py que tu change requiera)\n   - tests/ (tests nuevos o existentes)\n   - specs/iworkflow.openspec.json\n   - docs/USING_IWORKFLOW.md\n   - openspec/changes/step-schema-validation/\nPROHIBIDO ABSOLUTAMENTE: crear o editar CUALQUIER otro fichero. Nada de ficheros scratch, temporales, capturas (.png), .html, .json de scraping, `scripts/`, ni artefactos de exploración. Para explorar usa SOLO lectura. Si escribes fuera de esta lista, el motor aborta TODO el workflow y tu trabajo se descarta.\n\nALCANCE: implementa Única y exclusivamente la change `step-schema-validation`. NO toques el alcance de otras changes (tmux/schema/conditional/worktree) más allá de lo que tu propia change requiera.\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs; nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/.\n3. Actualiza specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si tocas la superficie pública.\n4. Reutiliza patrones existentes; NO crees una segunda convención; NO dejes código muerto ni shims.\n5. Smoke local SOLO de tus tests tocados (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes `make validate` completo.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; BLOCKED si falta un prerrequisito real (explícalo).",
+      "needs": [
+        "impl_tmux_isolation"
+      ]
     },
     {
       "id": "impl_conditional_routing",
       "kind": "agent",
-      "needs": [
-        "impl_schema_validation"
-      ],
       "prefer": [
-        "gemini",
-        "codex"
+        "codex",
+        "gemini"
       ],
       "sandbox": "write",
       "timeout_s": 1800,
@@ -141,17 +138,17 @@
         "docs/USING_IWORKFLOW.md",
         "openspec/changes/conditional-flow-routing"
       ],
-      "prompt": "Implementa la OpenSpec change `conditional-flow-routing` (GitHub issue #7) en el repo iworkflow.\n\nOBJETIVO: Aditivo: extender el campo `when` (hoy solo de supervisor) a cualquier paso top-level; el executor lo evalúa con _eval_when antes de despachar y salta el paso de forma determinista (resultado skipped + evento), reutilizando _validate_when/_eval_when intactos.\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/conditional-flow-routing/proposal.md  (Why / What Changes / Impact)\n- openspec/changes/conditional-flow-routing/specs/  (requisitos SHALL/MUST + escenarios WHEN/THEN: son tu contrato)\n- openspec/changes/conditional-flow-routing/tasks.md  (checklist de implementación; marca [x] lo que completes)\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs, nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en el control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS DE LA TAREA:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` debe quedar cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/ (uno por escenario observable).\n3. Actualiza el contrato público specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si el cambio toca la superficie pública.\n4. Reutiliza patrones existentes; NO introduzcas una segunda convención junto a una ya presente. NO dejes shims ni código muerto.\n5. Ejecuta SOLO tus tests nuevos/tocados para smoke local (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes el `make validate` completo: lo corre el paso de verificación del workflow.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; verdict=BLOCKED si falta un prerrequisito real (explícalo en summary)."
+      "prompt": "Implementa la OpenSpec change `conditional-flow-routing` (GitHub issue #7) en el repo iworkflow (cwd = raíz del repo).\n\nOBJETIVO: Aditivo: extender `when` (hoy solo supervisor) a cualquier paso top-level; el executor lo evalúa con _eval_when antes de despachar y salta el paso (resultado skipped + evento), reutilizando _validate_when/_eval_when.\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/conditional-flow-routing/proposal.md\n- openspec/changes/conditional-flow-routing/specs/   (requisitos SHALL/MUST + escenarios WHEN/THEN: tu contrato)\n- openspec/changes/conditional-flow-routing/tasks.md  (marca [x] lo completado)\n\n⚠️ RESTRICCIÓN DE FICHEROS — CRÍTICA Y NO NEGOCIABLE:\nSolo puedes CREAR o EDITAR ficheros dentro de estas rutas:\n   - iworkflow/ (solo los .py que tu change requiera)\n   - tests/ (tests nuevos o existentes)\n   - specs/iworkflow.openspec.json\n   - docs/USING_IWORKFLOW.md\n   - openspec/changes/conditional-flow-routing/\nPROHIBIDO ABSOLUTAMENTE: crear o editar CUALQUIER otro fichero. Nada de ficheros scratch, temporales, capturas (.png), .html, .json de scraping, `scripts/`, ni artefactos de exploración. Para explorar usa SOLO lectura. Si escribes fuera de esta lista, el motor aborta TODO el workflow y tu trabajo se descarta.\n\nALCANCE: implementa Única y exclusivamente la change `conditional-flow-routing`. NO toques el alcance de otras changes (tmux/schema/conditional/worktree) más allá de lo que tu propia change requiera.\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs; nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/.\n3. Actualiza specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si tocas la superficie pública.\n4. Reutiliza patrones existentes; NO crees una segunda convención; NO dejes código muerto ni shims.\n5. Smoke local SOLO de tus tests tocados (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes `make validate` completo.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; BLOCKED si falta un prerrequisito real (explícalo).",
+      "needs": [
+        "impl_schema_validation"
+      ]
     },
     {
       "id": "impl_worktree_isolation",
       "kind": "agent",
-      "needs": [
-        "impl_conditional_routing"
-      ],
       "prefer": [
-        "gemini",
-        "codex"
+        "codex",
+        "gemini"
       ],
       "sandbox": "write",
       "timeout_s": 1800,
@@ -169,7 +166,10 @@
         "docs/USING_IWORKFLOW.md",
         "openspec/changes/worktree-write-isolation"
       ],
-      "prompt": "Implementa la OpenSpec change `worktree-write-isolation` (GitHub issue #8) en el repo iworkflow.\n\nOBJETIVO: Aislar escrituras: para agentes write-capable dentro de parallel/pipeline, crear un git worktree por (run_id, step, agent), ejecutar con cwd=worktree, validar write_paths dentro, consolidar a la rama base solo al éxito y limpiar (git worktree remove).\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/worktree-write-isolation/proposal.md  (Why / What Changes / Impact)\n- openspec/changes/worktree-write-isolation/specs/  (requisitos SHALL/MUST + escenarios WHEN/THEN: son tu contrato)\n- openspec/changes/worktree-write-isolation/tasks.md  (checklist de implementación; marca [x] lo que completes)\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs, nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en el control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS DE LA TAREA:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` debe quedar cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/ (uno por escenario observable).\n3. Actualiza el contrato público specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si el cambio toca la superficie pública.\n4. Reutiliza patrones existentes; NO introduzcas una segunda convención junto a una ya presente. NO dejes shims ni código muerto.\n5. Ejecuta SOLO tus tests nuevos/tocados para smoke local (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes el `make validate` completo: lo corre el paso de verificación del workflow.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; verdict=BLOCKED si falta un prerrequisito real (explícalo en summary)."
+      "prompt": "Implementa la OpenSpec change `worktree-write-isolation` (GitHub issue #8) en el repo iworkflow (cwd = raíz del repo).\n\nOBJETIVO: Aislar escrituras: agentes write-capable en parallel/pipeline corren en un git worktree por (run_id,step,agent), cwd=worktree, validar write_paths dentro, consolidar a base solo al éxito, limpiar (git worktree remove).\n\nFUENTE DE VERDAD (léela entera antes de tocar código):\n- openspec/changes/worktree-write-isolation/proposal.md\n- openspec/changes/worktree-write-isolation/specs/   (requisitos SHALL/MUST + escenarios WHEN/THEN: tu contrato)\n- openspec/changes/worktree-write-isolation/tasks.md  (marca [x] lo completado)\n\n⚠️ RESTRICCIÓN DE FICHEROS — CRÍTICA Y NO NEGOCIABLE:\nSolo puedes CREAR o EDITAR ficheros dentro de estas rutas:\n   - iworkflow/ (solo los .py que tu change requiera)\n   - tests/ (tests nuevos o existentes)\n   - specs/iworkflow.openspec.json\n   - docs/USING_IWORKFLOW.md\n   - openspec/changes/worktree-write-isolation/\nPROHIBIDO ABSOLUTAMENTE: crear o editar CUALQUIER otro fichero. Nada de ficheros scratch, temporales, capturas (.png), .html, .json de scraping, `scripts/`, ni artefactos de exploración. Para explorar usa SOLO lectura. Si escribes fuera de esta lista, el motor aborta TODO el workflow y tu trabajo se descarta.\n\nALCANCE: implementa Única y exclusivamente la change `worktree-write-isolation`. NO toques el alcance de otras changes (tmux/schema/conditional/worktree) más allá de lo que tu propia change requiera.\n\nREGLAS DURAS (AGENTS.md): subscription-only (workers=CLIs; nunca API de pago/SDK con API-key en el core); core determinista (cero LLM en control de flujo); `iworkflow/` stdlib-only; respeta la asimetría de providers.\n\nREQUISITOS:\n1. Implementa EXACTAMENTE los requisitos del spec; cada `#### Scenario` cubierto por un test.\n2. Añade/extiende tests con FakeProvider/ScriptedProvider en tests/.\n3. Actualiza specs/iworkflow.openspec.json y docs/USING_IWORKFLOW.md si tocas la superficie pública.\n4. Reutiliza patrones existentes; NO crees una segunda convención; NO dejes código muerto ni shims.\n5. Smoke local SOLO de tus tests tocados (p.ej. `uv run pytest tests/test_X.py -q`). NO ejecutes `make validate` completo.\n\nDevuelve verdict=DONE solo si la implementación está completa y tus tests pasan; BLOCKED si falta un prerrequisito real (explícalo).",
+      "needs": [
+        "impl_conditional_routing"
+      ]
     },
     {
       "id": "verify",
@@ -191,14 +191,15 @@
         "verify"
       ],
       "prefer": [
-        "gemini"
+        "gemini",
+        "codex"
       ],
       "sandbox": "read-only",
       "timeout_s": 900,
       "heartbeat_interval_s": 60,
       "schema": "review_result",
       "required": false,
-      "prompt": "Auditoría independiente. Las 4 OpenSpec changes (openspec/changes/) han sido implementadas y `make validate` ha pasado.\nVerifica de forma adversarial que cada requisito SHALL/MUST de cada spec.md tiene cobertura REAL en el código y en los tests (no solo que los tests pasen). Para cada change, confirma que cada `#### Scenario` se corresponde con un test concreto. Reporta verdict=PASS solo si las 4 están completas y fieles a su contrato; verdict=FAIL listando en `issues` cada requisito/escenario sin cubrir."
+      "prompt": "Auditoría independiente (SOLO lectura, no edites nada). Las 4 OpenSpec changes han sido implementadas y `make validate` pasó. Verifica de forma adversarial que cada requisito SHALL/MUST de cada openspec/changes/*/specs/*/spec.md tiene cobertura REAL en código y tests (no solo que los tests pasen): cada `#### Scenario` debe corresponder a un test concreto. verdict=PASS solo si las 4 están completas y fieles; verdict=FAIL listando en `issues` cada requisito/escenario sin cubrir."
     }
   ],
   "output": {
