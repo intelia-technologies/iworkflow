@@ -30,6 +30,7 @@ from typing import Any
 from .catalog_loaders import load_project_catalog
 from .ledger import sha
 from .providers import ClaudeInteractiveProvider, CodexProvider, CursorProvider, GeminiProvider
+from .provider_models import default_cap, default_timeout
 from .recipes import get_recipe, list_recipes
 from .scheduler import Runner
 from .toolsets import ToolCatalog
@@ -84,20 +85,30 @@ def _default_runner(
     run_id: str,
     *,
     cwd: str | None = None,
-    timeout_s: float = 180,
+    timeout_s: float | None = None,
     caps: dict[str, int] | None = None,
     cooldown_s: float = DEFAULT_COOLDOWN_S,
     learn: bool = True,
     catalog: ToolCatalog | None = None,
     journal_dir: str = ".iworkflow",
     checkpoint_resolver: Any | None = None,
+    spill: bool = True,
 ) -> Runner:
-    caps = caps or {"codex": 2, "gemini": 2, "claude": 1, "cursor": 2}
+    # Per-provider profiles (timeout + cap) come from the provider catalog and
+    # reflect each CLI's cold-start/work profile and subscription scarcity. An
+    # explicit caps/timeout_s from the caller overrides the whole set.
+    if caps is None:
+        caps = {name: default_cap(name)
+                for name in ("codex", "gemini", "claude", "cursor")}
+
+    def _timeout(name: str) -> float:
+        return timeout_s if timeout_s is not None else (default_timeout(name) or 300)
+
     providers = {
-        "codex": CodexProvider("codex", timeout_s=timeout_s),
-        "gemini": GeminiProvider("gemini", timeout_s=timeout_s),
-        "claude": ClaudeInteractiveProvider("claude", timeout_s=timeout_s),
-        "cursor": CursorProvider("cursor", timeout_s=timeout_s),
+        "codex": CodexProvider("codex", timeout_s=_timeout("codex")),
+        "gemini": GeminiProvider("gemini", timeout_s=_timeout("gemini")),
+        "claude": ClaudeInteractiveProvider("claude", timeout_s=_timeout("claude")),
+        "cursor": CursorProvider("cursor", timeout_s=_timeout("cursor")),
     }
     return Runner(
         run_id,
@@ -109,6 +120,7 @@ def _default_runner(
         catalog=catalog,
         default_cwd=cwd,
         checkpoint_resolver=checkpoint_resolver,
+        spill=spill,
     )
 
 
@@ -336,7 +348,7 @@ async def run_workflow(goal: str | None = None, *, workflow: str | None = None,
                        run_id: str = "mcp", recipe_dir: str | None = None,
                        runner: Runner | None = None,
                        cwd: str | None = None,
-                       timeout_s: float = 180,
+                       timeout_s: float | None = None,
                        caps: dict[str, int] | None = None,
                        catalog_root: str | None = None,
                        journal_dir: str = ".iworkflow",
@@ -418,7 +430,7 @@ async def workflow_start(goal: str | None = None, *, workflow: str | None = None
                          run_id: str = "mcp", recipe_dir: str | None = None,
                          runner: Runner | None = None,
                          cwd: str | None = None,
-                         timeout_s: float = 180,
+                         timeout_s: float | None = None,
                          caps: dict[str, int] | None = None,
                          catalog_root: str | None = None,
                          journal_dir: str = ".iworkflow",
@@ -600,7 +612,7 @@ def main() -> None:
         run_id: str = "mcp",
         recipe_dir: str | None = None,
         cwd: str | None = None,
-        timeout_s: float = 180,
+        timeout_s: float | None = None,
         caps: dict[str, int] | None = None,
         catalog_root: str | None = None,
         journal_dir: str = ".iworkflow",
@@ -692,7 +704,7 @@ def main() -> None:
         run_id: str = "mcp",
         recipe_dir: str | None = None,
         cwd: str | None = None,
-        timeout_s: float = 180,
+        timeout_s: float | None = None,
         caps: dict[str, int] | None = None,
         catalog_root: str | None = None,
         journal_dir: str = ".iworkflow",

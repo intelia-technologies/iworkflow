@@ -11,7 +11,6 @@ Zero API tokens (workers are the CLIs). Zero coordination tokens (this is code).
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import sys
 import time
@@ -21,7 +20,13 @@ from typing import Any, Awaitable, Callable
 from .ledger import LedgerRecord, RunLedger, sha
 from .learn import adjust_order
 from .minijsonschema import validate
-from .providers import ClaudeInteractiveProvider, Provider, ProviderError, RateLimited
+from .providers import (
+    ClaudeInteractiveProvider,
+    Provider,
+    ProviderError,
+    RateLimited,
+    _accepts_on_event,
+)
 from .routing import KIND_ROUTES as ROUTES  # noqa: F401 — re-exported as iworkflow.ROUTES
 from .routing import route
 from .stats import provider_stats
@@ -61,6 +66,10 @@ class AgentResult:
 # KIND_ROUTES, re-exported above). Billing context: codex/gemini = subscription,
 # claude interactive (tmux) = Pool-1 subscription, claude -p = Pool-2 (metered).
 
+# Empirical-routing window: when learn=True, bound the ledger scan to the N most
+# recently modified runs so Runner construction stays O(window), not O(history).
+LEARN_STATS_WINDOW = 50
+
 
 class Runner:
     def __init__(self, run_id: str, providers: dict[str, Provider],
@@ -68,7 +77,9 @@ class Runner:
                  cooldown_s: float = 0.0, learn: bool = False,
                  catalog: ToolCatalog | None = None,
                  default_cwd: str | None = None,
-                 checkpoint_resolver: Callable[[dict[str, Any]], Any | Awaitable[Any]] | None = None):
+                 checkpoint_resolver: Callable[[dict[str, Any]], Any | Awaitable[Any]] | None = None,
+                 learn_window: int = LEARN_STATS_WINDOW,
+                 spill: bool = False):
         self.run_id = run_id
         self.providers = providers
         self._tmux_socket = f"iw_{run_id}"
@@ -85,10 +96,18 @@ class Runner:
         self.caps = caps
         self.active_pgids = set()
         self.cooldown_s = cooldown_s   # >0: skip a provider for this long after it throttles
+        # spill=True: prefer an idle provider over blocking on a busy higher-priority
+        # one (throughput over strict priority). Never promotes a scarce provider.
+        self.spill = spill
         # learn=True: demote providers that have been failing across past ledgers
-        self._stats = provider_stats(journal_dir) if learn else {}
+        self._stats = provider_stats(journal_dir, recent=learn_window) if learn else {}
         self.ledger = RunLedger(run_id, journal_dir)
         self._events_path = self.ledger.run_dir / "events.jsonl"
+        # Lazily-opened, long-lived append handle (see _emit). A chatty worker emits
+        # one event per streamed output line, so re-opening per event was hundreds of
+        # open/write/close syscalls per agent. flush() (not fsync) keeps it live for
+        # the dashboard without the crash-safety cost the ledger pays.
+        self._events_fh = None
         self._done: dict[str, AgentResult] = self._load_done()
 
     def _emit(self, label: str, event: str, **fields: Any) -> None:
@@ -98,8 +117,11 @@ class Runner:
         """
         rec = {"ts": time.time(), "run_id": self.run_id, "label": label,
                "event": event, **fields}
-        with self._events_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, default=str) + "\n")
+        fh = self._events_fh
+        if fh is None or fh.closed:
+            fh = self._events_fh = self._events_path.open("a", encoding="utf-8")
+        fh.write(json.dumps(rec, default=str) + "\n")
+        fh.flush()
 
     # --- resume (durable ledger, see ledger.py) --------------------------
     def _load_done(self) -> dict[str, AgentResult]:
@@ -133,6 +155,7 @@ class Runner:
     async def teardown(self) -> None:
         await self.teardown_tmux()
         self.kill_active_pgids()
+        self._close_events()
 
     async def teardown_tmux(self) -> None:
         if not self._teardown_tmux_server:
@@ -149,6 +172,11 @@ class Runner:
             await proc.communicate()
         except OSError:
             return
+
+    def _close_events(self) -> None:
+        fh = getattr(self, "_events_fh", None)
+        if fh is not None and not fh.closed:
+            fh.close()
 
     def _record(self, res: AgentResult, *, prompt: str, schema: dict | None,
                 attempts: list[Attempt], t_start: float,
@@ -208,7 +236,7 @@ class Runner:
         else:
             toolset = None
         tool_names = tuple(s.name for s in toolset.specs) if toolset else ()
-        from .provider_models import format_prefer, parse_prefer_list
+        from .provider_models import format_prefer, parse_prefer_list, provider_scarcity
 
         if prefer:
             targets = [
@@ -227,6 +255,22 @@ class Runner:
                     by_prov = {p: m for p, m in targets}
                     targets = [(p, by_prov.get(p)) for p in adjusted]
                     why = f"{why}→learned"
+        if self.spill and len(targets) > 1:
+            # Throughput over strict priority: if the top choice is busy but a less
+            # scarce provider is idle, dispatch there instead of queueing. Never
+            # promotes a high-scarcity provider (e.g. Claude Pool-1) ahead of others.
+            now = time.time()
+            flags = [
+                (t, not self.sems[t[0]].locked()
+                    and provider_scarcity(t[0]) != "high"
+                    and not (self.cooldown_s and self.ledger.is_cooling(t[0], now)))
+                for t in targets
+            ]
+            idle = [t for t, ok in flags if ok]
+            if idle and targets[0] not in idle:
+                busy = [t for t, ok in flags if not ok]
+                targets = idle + busy
+                why = f"{why}→spill"
         log(f"ROUTE    {label}: {why} → {format_prefer(targets)}")
         self._emit(label, "route", kind=why, order=format_prefer(targets),
                    tools=list(tool_names))
@@ -303,7 +347,7 @@ class Runner:
                         "toolset": toolset,
                         "model": dispatch_model,
                     }
-                    if "on_event" in inspect.signature(prov.run).parameters:
+                    if _accepts_on_event(prov.run):
                         kwargs["on_event"] = provider_event
                     coro = prov.run(prompt, **kwargs)
                     if timeout_s:

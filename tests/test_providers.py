@@ -477,3 +477,88 @@ def test_cursor_provider_requires_login(monkeypatch):
     monkeypatch.setattr(provider, "_exec", fake_exec)
     with pytest.raises(ProviderError, match="not logged in"):
         asyncio.run(provider.run("say hi", schema=None))
+
+
+def test_adaptive_polls_ramps_and_bounds():
+    steps = list(ClaudeInteractiveProvider._adaptive_polls(0.5, 3.0, 10.0))
+    assert steps[0] == 0.5
+    assert steps[1] > steps[0]                 # ramps up
+    assert all(s <= 3.0 + 1e-9 for s in steps)  # capped at max
+    assert max(steps) == 3.0                    # reaches the ceiling
+    assert abs(sum(steps) - 10.0) < 1e-6        # sums exactly to the total budget
+
+
+def test_acquire_session_fresh_when_reuse_off():
+    prov = ClaudeInteractiveProvider("claude", reuse_session=False)
+
+    async def fake_tmux(*args):
+        return ""
+
+    async def fake_ready(session):
+        return None
+
+    prov._tmux = fake_tmux            # type: ignore[method-assign]
+    prov._await_ready = fake_ready    # type: ignore[method-assign]
+
+    s1, reused1 = asyncio.run(prov._acquire_session("k", None, None))
+    s2, reused2 = asyncio.run(prov._acquire_session("k", None, None))
+    assert reused1 is False and reused2 is False
+    assert s1 != s2                   # a fresh session each call
+    assert prov._sessions == {}       # nothing cached when reuse is off
+
+
+def test_acquire_session_reuses_live_session():
+    prov = ClaudeInteractiveProvider("claude", reuse_session=True)
+    calls = []
+
+    async def fake_tmux(*args):
+        calls.append(args)
+        return ""
+
+    async def fake_ready(session):
+        return None
+
+    alive = {"v": False}
+
+    async def fake_alive(session):
+        return alive["v"]
+
+    prov._tmux = fake_tmux            # type: ignore[method-assign]
+    prov._await_ready = fake_ready    # type: ignore[method-assign]
+    prov._session_alive = fake_alive  # type: ignore[method-assign]
+
+    s1, reused1 = asyncio.run(prov._acquire_session("k", None, None))
+    assert reused1 is False
+    assert prov._sessions["k"] == s1
+
+    alive["v"] = True                 # the warm session is now alive
+    calls.clear()
+    s2, reused2 = asyncio.run(prov._acquire_session("k", None, None))
+    assert reused2 is True
+    assert s2 == s1                   # same warm session reused
+    flat = [" ".join(c) for c in calls]
+    assert any("/clear" in f for f in flat)        # context wiped before reuse
+    assert any("clear-history" in f for f in flat)  # scrollback wiped too
+
+
+def test_acquire_session_recreates_dead_session():
+    prov = ClaudeInteractiveProvider("claude", reuse_session=True)
+
+    async def fake_tmux(*args):
+        return ""
+
+    async def fake_ready(session):
+        return None
+
+    async def fake_alive(session):
+        return False                  # the cached session is dead
+
+    prov._tmux = fake_tmux            # type: ignore[method-assign]
+    prov._await_ready = fake_ready    # type: ignore[method-assign]
+    prov._session_alive = fake_alive  # type: ignore[method-assign]
+
+    s1, _ = asyncio.run(prov._acquire_session("k", None, None))
+    s2, reused2 = asyncio.run(prov._acquire_session("k", None, None))
+    assert reused2 is False           # dead cache entry → fresh session
+    assert s2 != s1
+    assert prov._sessions["k"] == s2

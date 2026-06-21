@@ -1122,10 +1122,11 @@ class _Executor:
         )
         await _create_worktree(base_cwd, wt_path, branch)
         try:
-            before_dirty = self._git_dirty_paths(wt_path)
+            before_dirty = await asyncio.to_thread(self._git_dirty_paths, wt_path)
             res = await self._agent_call(a, ctx, label, cwd=wt_path)
             if res.ok:
-                self._validate_write_paths(
+                await asyncio.to_thread(
+                    self._validate_write_paths,
                     a,
                     ctx,
                     label,
@@ -1479,10 +1480,11 @@ class _Executor:
     async def _exec_agent(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
         a = step.agent
         assert a is not None
-        before_dirty = self._git_dirty_paths() if self._write_guard_needed(a) else set()
+        wg = self._write_guard_needed(a)
+        before_dirty = await asyncio.to_thread(self._git_dirty_paths) if wg else set()
         res = await self._agent_call(a, ctx, label)
-        if res.ok and self._write_guard_needed(a):
-            self._validate_write_paths(a, ctx, label, before_dirty)
+        if res.ok and wg:
+            await asyncio.to_thread(self._validate_write_paths, a, ctx, label, before_dirty)
         out = self._result(res, kind="agent")
         self._raise_required_failure(a, res, label)
         if a.gate and res.ok:
@@ -1497,10 +1499,10 @@ class _Executor:
         return out
 
     async def _exec_parallel(self, step: Step, ctx: dict[str, Any], label: str) -> dict[str, Any]:
+        need_worktree = any(self._write_guard_needed(a) for a in step.agents)
         base_cwd = (
-            self._require_worktree_git_repo()
-            if any(self._write_guard_needed(a) for a in step.agents)
-            else None
+            await asyncio.to_thread(self._require_worktree_git_repo)
+            if need_worktree else None
         )
 
         def thunk(a: AgentSpec):
@@ -1532,10 +1534,10 @@ class _Executor:
                 f"pipeline step {step.id!r} has {len(items)} items > "
                 f"max_pipeline_items={self.limits.max_pipeline_items}")
 
+        need_worktree = any(self._write_guard_needed(a) for a in step.stages)
         base_cwd = (
-            self._require_worktree_git_repo()
-            if any(self._write_guard_needed(a) for a in step.stages)
-            else None
+            await asyncio.to_thread(self._require_worktree_git_repo)
+            if need_worktree else None
         )
 
         def make_stage(a: AgentSpec):

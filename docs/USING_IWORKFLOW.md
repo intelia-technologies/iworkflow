@@ -267,6 +267,16 @@ Then set `caps` for the run conservatively from ready subscriptions (for example
 `{"codex":2,"gemini":1}`), and rely on failover/resume when a provider throttles.
 Do not set fan-out wider than the subscription state can sustain.
 
+When neither `caps` nor `timeout_s` is given, the runner applies a **per-provider
+profile** from the model catalog instead of one flat value: caps follow subscription
+scarcity (`claude` → 1, others → 2) and timeouts follow each CLI's cold-start/work
+profile (`cursor` 150s, `codex` 300s, `gemini` 420s for 1M-context sweeps, `claude`
+600s for the interactive TUI). An explicit `caps`/`timeout_s` still overrides the whole
+set. The runner also **spills** an agent to an idle, less-scarce subscription rather
+than queueing behind a busy higher-priority one (never promoting a scarce provider
+like Claude), so a homogeneous fan-out fills `codex`/`gemini`/`cursor` in parallel
+instead of serializing on the top choice.
+
 Suggested per-step defaults:
 
 | Step | `timeout_s` | `heartbeat_interval_s` |

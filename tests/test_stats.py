@@ -25,3 +25,19 @@ def test_provider_stats_aggregates_ledger_outcomes(tmp_path):
 
 def test_provider_stats_empty_when_no_ledger(tmp_path):
     assert provider_stats(journal_dir=str(tmp_path)) == {}
+
+
+def test_provider_stats_recent_window(tmp_path):
+    # three independent runs, each logging one codex DONE
+    for i in range(3):
+        runner = Runner(
+            f"run-{i}",
+            {"codex": FakeProvider("codex")},
+            {"codex": 1},
+            journal_dir=str(tmp_path),
+        )
+        asyncio.run(runner.agent("implement x", label="j", role="doer"))
+
+    assert provider_stats(journal_dir=str(tmp_path))["codex"]["done"] == 3
+    # recent=1 bounds the scan to the single most-recent run
+    assert provider_stats(journal_dir=str(tmp_path), recent=1)["codex"]["done"] == 1

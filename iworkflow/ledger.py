@@ -70,6 +70,10 @@ class RunLedger:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.run_dir / "ledger.jsonl"
         self.cooldown_path = self.run_dir / "cooldown.json"
+        # In-memory cooldown cache: is_cooling() runs once per candidate in the
+        # failover loop, so re-reading + re-parsing the file each time was needless
+        # disk I/O. Seeded lazily from disk; a resumed run (new RunLedger) reloads.
+        self._cooldowns: dict[str, float] | None = None
 
     def append(self, rec: LedgerRecord) -> None:
         """Append one fsynced JSON line for crash-safe resume."""
@@ -111,6 +115,7 @@ class RunLedger:
         cooldowns = self._load_cooldowns()
         cooldowns[provider] = float(until_ts)
         self._write_json_atomic(self.cooldown_path, cooldowns)
+        self._cooldowns = cooldowns
 
     def is_cooling(self, provider: str, now: float) -> bool:
         """Return True when provider is still inside a persisted cooldown."""
@@ -118,19 +123,19 @@ class RunLedger:
         return until_ts is not None and until_ts > now
 
     def _load_cooldowns(self) -> dict[str, float]:
-        if not self.cooldown_path.exists():
-            return {}
-        try:
-            raw = json.loads(self.cooldown_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {}
-        if not isinstance(raw, dict):
-            return {}
-
+        if self._cooldowns is not None:
+            return self._cooldowns
         cooldowns: dict[str, float] = {}
-        for provider, until_ts in raw.items():
-            if isinstance(provider, str) and isinstance(until_ts, int | float):
-                cooldowns[provider] = float(until_ts)
+        if self.cooldown_path.exists():
+            try:
+                raw = json.loads(self.cooldown_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                raw = {}
+            if isinstance(raw, dict):
+                for provider, until_ts in raw.items():
+                    if isinstance(provider, str) and isinstance(until_ts, int | float):
+                        cooldowns[provider] = float(until_ts)
+        self._cooldowns = cooldowns
         return cooldowns
 
     def _write_json_atomic(self, path: Path, data: dict[str, float]) -> None:

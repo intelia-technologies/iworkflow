@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 from iworkflow import ClaudeInteractiveProvider, FakeProvider, Provider, Runner
 
@@ -404,3 +405,88 @@ def test_resume_invalidates_cache_when_prompt_changes(tmp_path):
     assert provider._calls == 2
     assert first.resumed is False
     assert second.resumed is False
+
+
+def test_spill_dispatches_to_idle_provider(tmp_path):
+    codex = FakeProvider("codex", delay_s=0.3)
+    cursor = FakeProvider("cursor")
+    runner = Runner(
+        "spill-on",
+        {"codex": codex, "cursor": cursor},
+        {"codex": 1, "cursor": 2},
+        journal_dir=str(tmp_path),
+        spill=True,
+    )
+
+    async def go():
+        # A occupies codex's only slot; with spill, B should dispatch to the idle
+        # cursor instead of queueing behind A on the busy higher-priority codex.
+        a = asyncio.create_task(runner.agent("a", label="a", prefer=["codex", "cursor"]))
+        await asyncio.sleep(0.05)
+        b = await runner.agent("b", label="b", prefer=["codex", "cursor"])
+        await a
+        return b
+
+    b = asyncio.run(go())
+    assert b.provider == "cursor"
+
+
+def test_no_spill_waits_for_priority_provider(tmp_path):
+    codex = FakeProvider("codex", delay_s=0.2)
+    cursor = FakeProvider("cursor")
+    runner = Runner(
+        "spill-off",
+        {"codex": codex, "cursor": cursor},
+        {"codex": 1, "cursor": 2},
+        journal_dir=str(tmp_path),
+    )  # spill defaults False → strict priority
+
+    async def go():
+        a = asyncio.create_task(runner.agent("a", label="a", prefer=["codex", "cursor"]))
+        await asyncio.sleep(0.05)
+        b = await runner.agent("b", label="b", prefer=["codex", "cursor"])
+        await a
+        return b
+
+    b = asyncio.run(go())
+    assert b.provider == "codex"
+
+
+def test_spill_never_promotes_scarce_provider(tmp_path):
+    codex = FakeProvider("codex", delay_s=0.2)
+    claude = FakeProvider("claude")
+    runner = Runner(
+        "spill-scarce",
+        {"codex": codex, "claude": claude},
+        {"codex": 1, "claude": 1},
+        journal_dir=str(tmp_path),
+        spill=True,
+    )
+
+    async def go():
+        a = asyncio.create_task(runner.agent("a", label="a", prefer=["codex", "claude"]))
+        await asyncio.sleep(0.05)
+        b = await runner.agent("b", label="b", prefer=["codex", "claude"])
+        await a
+        return b
+
+    b = asyncio.run(go())
+    # claude is high-scarcity → never spill-promoted; B waits for codex instead.
+    assert b.provider == "codex"
+
+
+def test_emit_reopens_closed_events_file(tmp_path):
+    runner = Runner(
+        "emit-reopen",
+        {"codex": FakeProvider("codex")},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+    )
+    runner._emit("a", "first")
+    runner._close_events()
+    # an emit after teardown (run_workflow's error path) must not crash.
+    runner._emit("b", "second")
+    path = Path(str(tmp_path)) / "runs" / "emit-reopen" / "events.jsonl"
+    events = [json.loads(line)["event"] for line in path.read_text().splitlines() if line.strip()]
+    assert "first" in events
+    assert "second" in events

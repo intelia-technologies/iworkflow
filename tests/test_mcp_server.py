@@ -535,3 +535,20 @@ def test_dashboard_server_api_endpoints(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=1.0)
+
+
+def test_default_runner_uses_per_provider_profiles(tmp_path):
+    from iworkflow.mcp_server import _default_runner
+    r = _default_runner("profiles", journal_dir=str(tmp_path), learn=False)
+    assert r.providers["codex"].timeout_s == 300
+    assert r.providers["gemini"].timeout_s == 420
+    assert r.providers["claude"].timeout_s == 600
+    assert r.providers["cursor"].timeout_s == 150
+    assert r.caps == {"codex": 2, "gemini": 2, "claude": 1, "cursor": 2}
+    assert r.spill is True
+
+
+def test_default_runner_explicit_timeout_overrides_all(tmp_path):
+    from iworkflow.mcp_server import _default_runner
+    r = _default_runner("override", timeout_s=99, journal_dir=str(tmp_path), learn=False)
+    assert all(p.timeout_s == 99 for p in r.providers.values())

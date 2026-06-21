@@ -15,6 +15,7 @@ Structured output is provider-aware:
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import json
 import os
@@ -104,6 +105,16 @@ def _toml_array(values: Any) -> str:
     else:
         seq = [values]
     return json.dumps([str(value) for value in seq], separators=(",", ":"))
+
+
+@functools.cache
+def _accepts_on_event(func: Callable[..., Any]) -> bool:
+    """Cache whether a callable accepts an `on_event` kwarg (avoids a per-call
+    inspect.signature() in the streaming exec path)."""
+    try:
+        return "on_event" in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 @dataclass
@@ -258,7 +269,7 @@ class Provider:
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> tuple[int, str, str]:
         kwargs: dict[str, Any] = {"cwd": cwd}
-        if on_event is not None and "on_event" in inspect.signature(self._exec).parameters:
+        if on_event is not None and _accepts_on_event(self._exec):
             kwargs["on_event"] = on_event
         return await self._exec(argv, stdin, **kwargs)
 
@@ -646,13 +657,38 @@ class ClaudeInteractiveProvider(Provider):
 
     Mechanics proven live: ready in ~3s, response prefixed with `⏺`, completion
     by pane-stability + schema-valid JSON present.
+
+    Latency: polling is ADAPTIVE — it ramps from `poll_min_s` to `poll_s`, so a
+    quick response is detected fast, while the *settle* decision stays time-based
+    (≈poll_s of an unchanged pane) so faster polling can't mistake a mid-render
+    frame for a finished answer.
+
+    `reuse_session=True` (opt-in) keeps the TUI process warm across calls, keyed by
+    (cwd, model, permission_mode), and sends `/clear` + `clear-history` to wipe both
+    conversation context and stale scrollback between calls — this skips the cold
+    readiness wait on every call but the first. Off by default, so each call is an
+    independent fresh session (the proven, stateless path).
     """
 
     supports_schema: bool = False
     permission_mode: str | None = None  # None = omit (answer mode); plan for write tasks
-    poll_s: float = 3.0
+    poll_s: float = 3.0                  # poll-backoff ceiling + settle-window unit
+    poll_min_s: float = 0.5              # initial (fast) poll interval
+    ready_timeout_s: float = 40.0        # max wait for the TUI to become ready
+    reuse_session: bool = False          # opt-in warm pool (see class docstring)
     tmux_socket: str | None = None
     _seq: int = field(default=0, init=False)
+    _sessions: dict[str, str] = field(default_factory=dict, init=False)
+
+    @staticmethod
+    def _adaptive_polls(min_s: float, max_s: float, total_s: float):
+        """Yield sleep intervals ramping min_s→max_s, summing to ≤ total_s."""
+        elapsed, delay = 0.0, max(min_s, 0.01)
+        while elapsed < total_s:
+            step = min(delay, total_s - elapsed)
+            yield step
+            elapsed += step
+            delay = min(delay * 1.6, max_s)
 
     async def _tmux(self, *args: str) -> str:
         argv = ["tmux"]
@@ -665,8 +701,63 @@ class ClaudeInteractiveProvider(Provider):
         out, _ = await proc.communicate()
         return out.decode(errors="replace")
 
+    async def _session_alive(self, session: str) -> bool:
+        argv = ["tmux"]
+        if self.tmux_socket is not None:
+            argv.extend(["-L", self.tmux_socket])
+        argv.extend(["has-session", "-t", session])
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        await proc.communicate()
+        return proc.returncode == 0
+
     async def _pane(self, session: str) -> str:
         return await self._tmux("capture-pane", "-p", "-S", "-3000", "-t", session)
+
+    async def _await_ready(self, session: str) -> None:
+        for step in self._adaptive_polls(self.poll_min_s, self.poll_s, self.ready_timeout_s):
+            p = await self._pane(session)
+            if any(m in p for m in ("plan mode", "Claude Max", "for shortcuts")):
+                break
+            await asyncio.sleep(step)
+        await asyncio.sleep(1.5)
+
+    async def _start_session(self, session: str, cwd: str | None,
+                             model: str | None) -> None:
+        command = "claude --strict-mcp-config --setting-sources user"
+        if model:
+            command += f" --model {model}"
+        if self.permission_mode:
+            command += f" --permission-mode {self.permission_mode}"
+        # tmux's native -c sets the session's start dir (robuster than `cd &&`)
+        new_session = ["new-session", "-d", "-s", session, "-x", "300", "-y", "50"]
+        if cwd:
+            new_session += ["-c", cwd]
+        await self._tmux(*new_session, command)
+        await self._await_ready(session)
+
+    async def _acquire_session(self, key: str, cwd: str | None,
+                               model: str | None) -> tuple[str, bool]:
+        """Return (session, reused). Warm-reuse a live session for `key` when
+        reuse_session is on (resetting context first); else a fresh session."""
+        if self.reuse_session:
+            existing = self._sessions.get(key)
+            if existing is not None and await self._session_alive(existing):
+                # wipe conversation + scrollback so the next independent prompt
+                # can't match a stale marker/JSON left by the previous answer.
+                await self._tmux("send-keys", "-t", existing, "/clear", "Enter")
+                await self._await_ready(existing)
+                await self._tmux("clear-history", "-t", existing)
+                return existing, True
+            self._sessions.pop(key, None)
+        self._seq += 1
+        session = f"iwf-{os.getpid()}-{self._seq}"
+        await self._tmux("kill-session", "-t", session)
+        await self._start_session(session, cwd, model)
+        if self.reuse_session:
+            self._sessions[key] = session
+        return session, False
 
     async def run(
         self,
@@ -679,35 +770,15 @@ class ClaudeInteractiveProvider(Provider):
         model: str | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
-        self._seq += 1
-        session = f"iwf-{os.getpid()}-{self._seq}"
         full = _prompt_with_toolset(prompt, toolset)
         if schema:
             full += ("\n\nOutput ONLY one compact single-line JSON object matching "
                      "this schema — no code fences, no commentary:\n" + json.dumps(schema))
         else:
             full += _SENTINEL_INSTRUCTION
-        await self._tmux("kill-session", "-t", session)
+        key = f"{cwd or ''}|{model or ''}|{self.permission_mode or ''}"
+        session, _reused = await self._acquire_session(key, cwd, model)
         try:
-            command = "claude --strict-mcp-config --setting-sources user"
-            if model:
-                command += f" --model {model}"
-            if self.permission_mode:
-                command += f" --permission-mode {self.permission_mode}"
-            # tmux's native -c sets the session's start dir (robuster than `cd &&`)
-            new_session = ["new-session", "-d", "-s", session, "-x", "300", "-y", "50"]
-            if cwd:
-                new_session += ["-c", cwd]
-            await self._tmux(*new_session, command)
-
-            # readiness
-            for _ in range(int(40 / self.poll_s) + 1):
-                p = await self._pane(session)
-                if any(m in p for m in ("plan mode", "Claude Max", "for shortcuts")):
-                    break
-                await asyncio.sleep(self.poll_s)
-            await asyncio.sleep(1.5)
-
             baseline = await self._pane(session)
             base_json = _find_schema_json(baseline, schema)
 
@@ -716,12 +787,16 @@ class ClaudeInteractiveProvider(Provider):
             await self._tmux("paste-buffer", "-p", "-t", session)
             await self._tmux("send-keys", "-t", session, "Enter")
 
-            # completion: stable pane + (schema → fresh valid JSON) / (prose → ⏺ block)
-            prev, stable = None, 0
+            # completion: pane unchanged for a settle window + (schema → fresh valid
+            # JSON) / (sentinel-wrapped prose) / (⏺ block). Settle is time-based so
+            # adaptive polling cannot mistake a mid-stream frame for a finished one.
+            prev = baseline
             last_emitted = baseline
-            max_polls = int(self.timeout_s / self.poll_s)
-            for _ in range(max_polls):
-                await asyncio.sleep(self.poll_s)
+            unchanged_for = 0.0
+            schema_settle = self.poll_s
+            prose_settle = 2 * self.poll_s
+            for step in self._adaptive_polls(self.poll_min_s, self.poll_s, self.timeout_s):
+                await asyncio.sleep(step)
                 cur = await self._pane(session)
                 if on_event is not None and cur != last_emitted:
                     delta = cur[len(last_emitted):] if cur.startswith(last_emitted) else cur
@@ -732,22 +807,23 @@ class ClaudeInteractiveProvider(Provider):
                 if re.search(r"usage limit reached|approaching your usage limit",
                              cur, re.IGNORECASE):
                     raise RateLimited(cur[-400:])
-                stable = stable + 1 if cur == prev else 0
+                unchanged_for = unchanged_for + step if cur == prev else 0.0
                 prev = cur
                 if schema:
                     cand = _find_schema_json(cur, schema)
-                    if cand is not None and cand != base_json and stable >= 1:
+                    if cand is not None and cand != base_json and unchanged_for >= schema_settle:
                         ok, why = validate(cand, schema)
                         if not ok:
                             raise ProviderError(f"schema mismatch: {why}")
                         return cand
-                elif _extract_sentinel(cur) is not None and stable >= 1:
+                elif _extract_sentinel(cur) is not None and unchanged_for >= schema_settle:
                     return _response_text(cur)
-                elif "⏺" in cur and stable >= 2:          # prose response has settled
+                elif "⏺" in cur and unchanged_for >= prose_settle:   # prose has settled
                     return _response_text(cur)
             raise ProviderError("timed out waiting for interactive response")
         finally:
-            await self._tmux("kill-session", "-t", session)
+            if not self.reuse_session:
+                await self._tmux("kill-session", "-t", session)
 
 
 def _response_text(pane: str) -> str:

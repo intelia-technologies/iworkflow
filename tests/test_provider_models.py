@@ -90,7 +90,7 @@ def test_dynamic_models_loading(tmp_path, monkeypatch):
             if isinstance(data, dict):
                 providers = data.get("providers") if "providers" in data else data
                 if isinstance(providers, dict):
-                    provider_models.PROVIDER_MODELS.update(providers)
+                    provider_models._merge_provider_models(providers)
                     provider_models._ALIAS_INDEX = None
                 if "capabilities" in data:
                     routing.CAPABILITIES.update(data["capabilities"])
@@ -100,3 +100,29 @@ def test_dynamic_models_loading(tmp_path, monkeypatch):
     assert provider_models.PROVIDER_MODELS["cursor"]["label"] == "Custom Cursor Label"
     assert provider_models.resolve_model("cursor", "custom") == "custom-model"
     assert routing.CAPABILITIES["cursor"]["great_at"] == ["custom_task"]
+
+
+def test_default_cap_matches_scarcity():
+    from iworkflow.provider_models import default_cap
+    assert default_cap("claude") == 1          # high scarcity → scarce shared pool
+    assert default_cap("codex") == 2
+    assert default_cap("gemini") == 2
+    assert default_cap("cursor") == 2
+    assert default_cap("unknown-provider") == 2  # no metadata → default tier
+
+
+def test_default_timeout_profiles():
+    from iworkflow.provider_models import default_timeout
+    assert default_timeout("claude") == 600    # slow TUI cold-start + scarce
+    assert default_timeout("gemini") == 420     # 1M-context sweeps need room
+    assert default_timeout("codex") == 300
+    assert default_timeout("cursor") == 150     # fast fan-out
+    assert default_timeout("unknown-provider") is None
+
+
+def test_provider_scarcity_tiers():
+    from iworkflow.provider_models import provider_scarcity
+    assert provider_scarcity("claude") == "high"
+    assert provider_scarcity("cursor") == "medium"
+    assert provider_scarcity("codex") == "low"
+    assert provider_scarcity("unknown-provider") == "low"

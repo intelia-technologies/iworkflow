@@ -14,20 +14,31 @@ from pathlib import Path
 from typing import Any
 
 
-def _ledger_files(journal_dir: str, run_id: str | None) -> list[Path]:
+def _ledger_files(journal_dir: str, run_id: str | None,
+                  recent: int | None = None) -> list[Path]:
     base = Path(journal_dir) / "runs"
     if not base.exists():
         return []
-    runs = [base / run_id] if run_id else sorted(base.iterdir())
+    if run_id:
+        runs = [base / run_id]
+    else:
+        runs = sorted((r for r in base.iterdir() if r.is_dir()),
+                      key=lambda r: r.stat().st_mtime)
+        if recent is not None:
+            runs = runs[-recent:]
     return [r / "ledger.jsonl" for r in runs if (r / "ledger.jsonl").exists()]
 
 
 def provider_stats(journal_dir: str = ".iworkflow",
-                   run_id: str | None = None) -> dict[str, dict[str, Any]]:
-    """Aggregate attempt outcomes + DONE latency per provider across ledger(s)."""
+                   run_id: str | None = None,
+                   recent: int | None = None) -> dict[str, dict[str, Any]]:
+    """Aggregate attempt outcomes + DONE latency per provider across ledger(s).
+
+    `recent` bounds the scan to the N most recently modified runs (None = all),
+    so empirical routing stays O(window) instead of O(history) per Runner init."""
     agg: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"DONE": 0, "RATE_LIMITED": 0, "ERROR": 0, "COOLING": 0, "_lat": []})
-    for path in _ledger_files(journal_dir, run_id):
+    for path in _ledger_files(journal_dir, run_id, recent):
         for line in path.read_text().splitlines():
             if not line.strip():
                 continue

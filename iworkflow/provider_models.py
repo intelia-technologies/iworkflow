@@ -18,6 +18,9 @@ PROVIDER_MODELS: dict[str, dict[str, Any]] = {
         "label": "OpenAI Codex (ChatGPT subscription)",
         "cli": "codex exec -m <model>",
         "login": "codex login",
+        "scarcity": "low",
+        "cap": 2,
+        "timeout_s": 300,
         "default": None,
         "models": {
             "gpt-5.4": {
@@ -35,6 +38,9 @@ PROVIDER_MODELS: dict[str, dict[str, Any]] = {
         "label": "Claude (interactive TUI via tmux, Pool 1 subscription)",
         "cli": "claude --model <model>",
         "login": "claude auth login",
+        "scarcity": "high",
+        "cap": 1,
+        "timeout_s": 600,
         "default": None,
         "models": {
             "opus": {
@@ -52,6 +58,9 @@ PROVIDER_MODELS: dict[str, dict[str, Any]] = {
         "label": "Gemini (agy / Antigravity, Google subscription)",
         "cli": "agy -p --model <name>",
         "login": "Antigravity / agy install (agy models lists session)",
+        "scarcity": "low",
+        "cap": 2,
+        "timeout_s": 420,
         "default": "Gemini 3.5 Flash (Medium)",
         "models": {
             "Gemini 3.5 Flash (Medium)": {
@@ -76,6 +85,9 @@ PROVIDER_MODELS: dict[str, dict[str, Any]] = {
         "label": "Cursor Agent (Cursor subscription)",
         "cli": "cursor-agent -p --model <model>",
         "login": "cursor-agent login",
+        "scarcity": "medium",
+        "cap": 2,
+        "timeout_s": 150,
         "default": "composer-2.5",
         "models": {
             "composer-2.5": {
@@ -98,6 +110,18 @@ LEGACY_PROVIDER_ALIASES: dict[str, tuple[str, str | None]] = {
 
 RoutingTarget = tuple[str, str | None]
 
+def _merge_provider_models(providers: dict[str, Any]) -> None:
+    """Deep-merge a user/model override into PROVIDER_MODELS, per provider: keys the
+    user specifies win, but unspecified keys (e.g. the built-in scarcity/cap/timeout
+    profile) survive instead of being wiped by a wholesale replace."""
+    for name, meta in providers.items():
+        existing = PROVIDER_MODELS.get(name)
+        if isinstance(meta, dict) and isinstance(existing, dict):
+            PROVIDER_MODELS[name] = {**existing, **meta}
+        else:
+            PROVIDER_MODELS[name] = meta
+
+
 # Load dynamic model config override
 MODELS_FILE = Path.home() / ".iworkflow" / "models.json"
 if MODELS_FILE.is_file():
@@ -106,7 +130,7 @@ if MODELS_FILE.is_file():
         if isinstance(data, dict):
             providers = data.get("providers") if "providers" in data else data
             if isinstance(providers, dict):
-                PROVIDER_MODELS.update(providers)
+                _merge_provider_models(providers)
     except Exception:
         pass
 
@@ -161,6 +185,30 @@ def list_provider_models() -> dict[str, Any]:
 def default_model(provider: str) -> str | None:
     meta = PROVIDER_MODELS.get(provider) or {}
     return meta.get("default")
+
+
+def default_timeout(provider: str) -> int | None:
+    """Per-provider CLI timeout ceiling (seconds). None → caller picks a fallback."""
+    meta = PROVIDER_MODELS.get(provider) or {}
+    value = meta.get("timeout_s")
+    return int(value) if value is not None else None
+
+
+def default_cap(provider: str) -> int:
+    """Per-provider concurrency cap. Explicit `cap` wins; else derive from scarcity
+    (high -> 1, the scarce shared pool; otherwise -> 2)."""
+    meta = PROVIDER_MODELS.get(provider) or {}
+    cap = meta.get("cap")
+    if cap is not None:
+        return int(cap)
+    return 1 if meta.get("scarcity") == "high" else 2
+
+
+def provider_scarcity(provider: str) -> str:
+    """Subscription scarcity tier: 'low' | 'medium' | 'high' (default 'low').
+    Used by the scheduler's idle-spill so a scarce provider is never promoted."""
+    meta = PROVIDER_MODELS.get(provider) or {}
+    return str(meta.get("scarcity") or "low")
 
 
 def resolve_model(provider: str, model: str | None) -> str | None:
