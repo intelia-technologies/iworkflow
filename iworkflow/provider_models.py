@@ -24,14 +24,27 @@ PROVIDER_MODELS: dict[str, dict[str, Any]] = {
         "timeout_s": 300,
         "default": None,
         "models": {
-            "gpt-5.4": {
-                "label": "GPT-5.4",
-                "aliases": ["5.4"],
-                "notes": "Structured codegen; native --output-schema",
+            # GPT-5.6 family (verified against codex CLI + ChatGPT account 2026-07-10):
+            # luna = fast/cheap, terra = balanced default, sol = top capability.
+            "gpt-5.6-luna": {
+                "label": "GPT-5.6 Luna",
+                "aliases": ["luna", "5.6-luna"],
+                "notes": "Fast/efficient profile — bulk fan-out, classify, small edits",
+            },
+            "gpt-5.6-terra": {
+                "label": "GPT-5.6 Terra",
+                "aliases": ["terra", "5.6-terra"],
+                "notes": "Balanced profile — implementation, review, audit (routing default)",
+            },
+            "gpt-5.6-sol": {
+                "label": "GPT-5.6 Sol",
+                "aliases": ["sol", "5.6-sol"],
+                "notes": "Top of the 5.6 family — architecture, hard debugging, long tasks",
             },
             "gpt-5.5": {
                 "label": "GPT-5.5",
                 "aliases": ["5.5", "default"],
+                "notes": "Known-stable fallback; keep for tasks tuned on it",
             },
         },
     },

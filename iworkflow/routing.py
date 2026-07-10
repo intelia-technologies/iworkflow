@@ -20,7 +20,7 @@ from pathlib import Path
 # --- What each model is good at (the thing to tune) ----------------------
 CAPABILITIES = {
     "codex": {
-        "model": "GPT-5.x-codex (codex exec, ChatGPT login)",
+        "model": "GPT-5.6 Luna/Terra/Sol + GPT-5.5 fallback (codex exec, ChatGPT login)",
         "great_at": ["code implementation", "spec-following codegen", "refactors",
                      "tool use", "structured output"],
         "weak_at": ["very long context", "open-ended prose"],
@@ -94,12 +94,18 @@ KIND_ROUTES = {
 
 # Per kind, optional default model when a provider is auto-routed (vendor id → model id).
 # cursor's -fast tier costs extra for the same model — hints always pin base.
+# codex: GPT-5.6 profiles — luna (fast) for bulk, terra (balanced) as the
+# working default, sol (top) for delicate reasoning; gpt-5.5 stays available
+# as the known-stable explicit fallback but is never auto-hinted.
 KIND_MODEL_HINTS: dict[str, dict[str, str]] = {
-    "audit": {"cursor": "composer-2.5"},
-    "classify": {"cursor": "composer-2.5", "gemini": "Gemini 3.5 Flash (Medium)"},
-    "default": {"cursor": "composer-2.5"},
-    "implement": {"cursor": "composer-2.5"},
-    "review": {"cursor": "composer-2.5"},
+    "audit": {"cursor": "composer-2.5", "codex": "gpt-5.6-terra"},
+    "classify": {"cursor": "composer-2.5", "gemini": "Gemini 3.5 Flash (Medium)",
+                 "codex": "gpt-5.6-luna"},
+    "default": {"cursor": "composer-2.5", "codex": "gpt-5.6-terra"},
+    "implement": {"cursor": "composer-2.5", "codex": "gpt-5.6-terra"},
+    "review": {"cursor": "composer-2.5", "codex": "gpt-5.6-terra"},
+    "reason": {"codex": "gpt-5.6-sol"},
+    "structured": {"codex": "gpt-5.6-terra"},
 }
 
 _LARGE_PROMPT = 30_000   # chars → treat as a context sweep

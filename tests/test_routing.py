@@ -51,4 +51,4 @@ def test_schema_only_prompt_routes_codex_first():
     )
 
     assert why == "inferred=structured"
-    assert order == [("codex", None), ("gemini", None)]
+    assert order == [("codex", "gpt-5.6-terra"), ("gemini", None)]
