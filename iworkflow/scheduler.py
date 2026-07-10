@@ -44,6 +44,16 @@ class Attempt:
     detail: str = ""
 
 
+def _final_outcome(attempts: list["Attempt"]) -> str | None:
+    """Outcome of the last REAL attempt — COOLING skips are bookkeeping, not
+    failures, so they must not mask the true exhausted reason (e.g. a TIMEOUT
+    followed by a still-cooling provider's COOLING entry)."""
+    for a in reversed(attempts):
+        if a.outcome != "COOLING":
+            return a.outcome
+    return attempts[-1].outcome if attempts else None
+
+
 @dataclass
 class AgentResult:
     label: str
@@ -79,7 +89,9 @@ class Runner:
                  default_cwd: str | None = None,
                  checkpoint_resolver: Callable[[dict[str, Any]], Any | Awaitable[Any]] | None = None,
                  learn_window: int = LEARN_STATS_WINDOW,
-                 spill: bool = False):
+                 spill: bool = False,
+                 retries: int = 1,
+                 retry_backoff_s: float = 2.0):
         self.run_id = run_id
         self.providers = providers
         self._tmux_socket = f"iw_{run_id}"
@@ -99,6 +111,10 @@ class Runner:
         # spill=True: prefer an idle provider over blocking on a busy higher-priority
         # one (throughput over strict priority). Never promotes a scarce provider.
         self.spill = spill
+        # retries: extra same-provider tries for transient ERROR/TIMEOUT before
+        # failing over (rate limits and schema mismatches never retry).
+        self.retries = max(0, int(retries))
+        self.retry_backoff_s = retry_backoff_s
         # learn=True: demote providers that have been failing across past ledgers
         self._stats = provider_stats(journal_dir, recent=learn_window) if learn else {}
         self.ledger = RunLedger(run_id, journal_dir)
@@ -191,7 +207,7 @@ class Runner:
                       for a in attempts],
             prompt_sha=sha(prompt), schema_sha=sha(schema) if schema is not None else None,
             ts_start=t_start, ts_end=time.time(),
-            error_class=(attempts[-1].outcome if res.status == "EXHAUSTED" and attempts
+            error_class=(_final_outcome(attempts) if res.status == "EXHAUSTED" and attempts
                          else None),
             retry_after=None, kind=kind, tools=list(tools),
             input_tokens=u.get("input_tokens"), output_tokens=u.get("output_tokens"),
@@ -210,7 +226,8 @@ class Runner:
                     tools: list[str] | None = None,
                     auto_tools: int | None = None,
                     timeout_s: int | None = None,
-                    heartbeat_interval_s: int | None = None) -> AgentResult:
+                    heartbeat_interval_s: int | None = None,
+                    fallback: bool = True) -> AgentResult:
         prompt_hash = sha(prompt)
         if label in self._done:
             cached = self._done[label]
@@ -245,6 +262,19 @@ class Runner:
                 if p in self.providers
             ]
             why = "explicit"
+            # A single-provider pin turns any transient failure into EXHAUSTED.
+            # Unless the workflow opts out (fallback=False, e.g. an adversarial
+            # auditor that must stay vendor-independent), append route-ordered
+            # fallbacks — never promoting a scarce (high-scarcity) subscription.
+            if fallback and len(targets) == 1:
+                primary = targets[0][0]
+                extras, _ = route(role, schema=schema, prompt=prompt,
+                                  available=[p for p in self.providers
+                                             if p != primary
+                                             and provider_scarcity(p) != "high"])
+                if extras:
+                    targets = targets + extras
+                    why = "explicit+fallback"
         else:
             targets, why = route(role, schema=schema, prompt=prompt,
                                  available=list(self.providers))
@@ -255,7 +285,10 @@ class Runner:
                     by_prov = {p: m for p, m in targets}
                     targets = [(p, by_prov.get(p)) for p in adjusted]
                     why = f"{why}→learned"
-        if self.spill and len(targets) > 1:
+        # explicit+fallback targets exist for FAILURE recovery only: spill must not
+        # promote a fallback over a merely-busy pinned provider (a pinned fan-out
+        # would otherwise spray across providers instead of queueing on the pin).
+        if self.spill and len(targets) > 1 and why != "explicit+fallback":
             # Throughput over strict priority: if the top choice is busy but a less
             # scarce provider is idle, dispatch there instead of queueing. Never
             # promotes a high-scarcity provider (e.g. Claude Pool-1) ahead of others.
@@ -289,137 +322,173 @@ class Runner:
         )
         attempts: list[Attempt] = []
         last_heartbeat: float | None = None
+        waited_out_cooldown = False
 
-        for name, target_model in targets:
-            prov = self.providers[name]
-            # throttle-aware: skip a provider still cooling down from a recent limit,
-            # so we don't waste an attempt hammering a known-throttled subscription.
-            if self.cooldown_s and self.ledger.is_cooling(name, time.time()):
-                attempts.append(Attempt(name, "COOLING"))
-                log(f"COOLING  {label} ⏳ {name} (skip) → next")
-                self._emit(label, "cooling", provider=name)
+        while True:
+            dispatched_any = False
+            cooling_until: list[float] = []
+            for name, target_model in targets:
+                prov = self.providers[name]
+                # throttle-aware: skip a provider still cooling down from a recent limit,
+                # so we don't waste an attempt hammering a known-throttled subscription.
+                if self.cooldown_s and self.ledger.is_cooling(name, time.time()):
+                    attempts.append(Attempt(name, "COOLING"))
+                    until = self.ledger.cooldown_until(name)
+                    if until is not None:
+                        cooling_until.append(until)
+                    log(f"COOLING  {label} ⏳ {name} (skip) → next")
+                    self._emit(label, "cooling", provider=name)
+                    continue
+                dispatched_any = True
+                # each provider handles its own schema capability (gemini parses a JSON
+                # block; codex/claude use a native schema) — just pass it through.
+                use_schema = schema
+                async with self.sems[name]:
+                    dispatch_model = target_model or (model if len(targets) == 1 else None)
+                    # transient failures (ERROR/TIMEOUT) get self.retries extra tries on
+                    # the SAME provider before failing over; a rate limit or a schema
+                    # mismatch fails over immediately (retrying won't unthrottle a
+                    # subscription, and a mismatch is behavioral, not transient).
+                    for retry_i in range(self.retries + 1):
+                        model_note = f" model={dispatch_model}" if dispatch_model else ""
+                        retry_note = f" retry {retry_i}/{self.retries}" if retry_i else ""
+                        log(f"DISPATCH {label} → {name}{model_note}"
+                            f" (cap {self.caps.get(name)}){retry_note}")
+                        self._emit(label, "dispatch", provider=name, model=dispatch_model,
+                                   retry=retry_i)
+
+                        heartbeat_task = None
+                        if heartbeat_interval_s:
+                            async def heartbeat_loop():
+                                nonlocal last_heartbeat
+                                while True:
+                                    await asyncio.sleep(heartbeat_interval_s)
+                                    last_heartbeat = time.time()
+                                    log(f"HEARTBEAT {label} ← {name}")
+                                    self._emit(label, "heartbeat", provider=name)
+                            heartbeat_task = asyncio.create_task(heartbeat_loop())
+
+                        try:
+                            def provider_event(event: str, fields: dict[str, Any]) -> None:
+                                if event == "output":
+                                    text = str(fields.get("text", ""))
+                                    if text:
+                                        self._emit(
+                                            label,
+                                            "output",
+                                            provider=name,
+                                            stream=fields.get("stream", "stdout"),
+                                            text=text,
+                                        )
+                                elif event == "spawn":
+                                    pgid = fields.get("pgid")
+                                    if pgid:
+                                        self.register_pgid(pgid)
+                                elif event == "reap":
+                                    pgid = fields.get("pgid")
+                                    if pgid:
+                                        self.unregister_pgid(pgid)
+
+                            kwargs = {
+                                "schema": use_schema,
+                                "sandbox": sandbox,
+                                "cwd": effective_cwd,
+                                "toolset": toolset,
+                                "model": dispatch_model,
+                            }
+                            if _accepts_on_event(prov.run):
+                                kwargs["on_event"] = provider_event
+                            coro = prov.run(prompt, **kwargs)
+                            if timeout_s:
+                                value = await asyncio.wait_for(coro, timeout=timeout_s)
+                            else:
+                                value = await coro
+
+                            if heartbeat_task:
+                                heartbeat_task.cancel()
+
+                            # read usage immediately (no await between → race-free in asyncio)
+                            usage = getattr(prov, "last_usage", None) or {}
+                            schema_ok = None
+                            if schema is not None:
+                                schema_ok, mismatch = validate(value, schema)
+                                if not schema_ok:
+                                    attempts.append(Attempt(name, "SCHEMA_MISMATCH", mismatch[:120]))
+                                    log(f"SCHEMA  {label} ✗ {name}: {mismatch[:80]} → failover")
+                                    self._emit(label, "schema_mismatch", provider=name, why=mismatch)
+                                    break
+                            attempts.append(Attempt(name, "DONE"))
+                            res = AgentResult(label, "DONE", name, value, attempts,
+                                              prompt_sha=prompt_hash, last_heartbeat=last_heartbeat,
+                                              schema_ok=schema_ok)
+                            self._done[label] = res      # within-process dedup, not just cross-process
+                            self._record(res, prompt=prompt, schema=schema, attempts=attempts,
+                                         t_start=t_start, kind=why, tools=tool_names, usage=usage,
+                                         model=dispatch_model or usage.get("model"))
+                            self._emit(label, "done", provider=name,
+                                       model=dispatch_model or usage.get("model"),
+                                       ms=round((time.time() - t_start) * 1000),
+                                       input_tokens=usage.get("input_tokens"),
+                                       output_tokens=usage.get("output_tokens"),
+                                       cost_usd=usage.get("cost_usd"))
+                            log(f"DONE     {label} ← {name}")
+                            return res
+                        except asyncio.TimeoutError:
+                            if heartbeat_task:
+                                heartbeat_task.cancel()
+                            attempts.append(Attempt(name, "TIMEOUT", f"Exceeded {timeout_s}s"))
+                            self._emit(label, "timeout", provider=name, timeout_s=timeout_s)
+                            if retry_i < self.retries:
+                                log(f"TIMEOUT  {label} ✗ {name} ({timeout_s}s) → retry")
+                                await asyncio.sleep(self.retry_backoff_s * (retry_i + 1))
+                                continue
+                            log(f"TIMEOUT  {label} ✗ {name} ({timeout_s}s) → failover")
+                            break
+                        except RateLimited as e:
+                            if heartbeat_task:
+                                heartbeat_task.cancel()
+                            attempts.append(Attempt(name, "RATE_LIMITED", str(e)[:120]))
+                            if self.cooldown_s:
+                                self.ledger.record_cooldown(name, time.time() + self.cooldown_s)
+                            log(f"LIMITED  {label} ✗ {name} → failover")
+                            self._emit(label, "limited", provider=name)
+                            break
+                        except ProviderError as e:
+                            if heartbeat_task:
+                                heartbeat_task.cancel()
+                            detail = str(e)
+                            if schema is not None and detail.startswith("schema mismatch:"):
+                                why_detail = detail.split("schema mismatch:", 1)[1].strip() or detail
+                                attempts.append(Attempt(name, "SCHEMA_MISMATCH", why_detail[:120]))
+                                log(f"SCHEMA  {label} ✗ {name}: {why_detail[:80]} → failover")
+                                self._emit(label, "schema_mismatch", provider=name, why=why_detail)
+                                break
+                            attempts.append(Attempt(name, "ERROR", detail[:120]))
+                            self._emit(label, "error", provider=name, detail=detail[:120])
+                            if retry_i < self.retries and getattr(e, "transient", True):
+                                log(f"ERROR    {label} ✗ {name}: {str(e)[:80]} → retry")
+                                await asyncio.sleep(self.retry_backoff_s * (retry_i + 1))
+                                continue
+                            log(f"ERROR    {label} ✗ {name}: {str(e)[:80]} → failover")
+                            break
+                        finally:
+                            if heartbeat_task and not heartbeat_task.done():
+                                heartbeat_task.cancel()
+
+            # every routed target sat inside a cooldown window — instead of returning
+            # EXHAUSTED without having tried anything, wait for the earliest cooldown
+            # to expire and re-run the dispatch round once.
+            if not dispatched_any and cooling_until and not waited_out_cooldown:
+                waited_out_cooldown = True
+                wait_s = max(min(cooling_until) - time.time(), 0.0) + 0.05
+                log(f"COOLWAIT {label} — all providers cooling; waiting {wait_s:.1f}s")
+                self._emit(label, "cooldown_wait", wait_s=round(wait_s, 2))
+                await asyncio.sleep(wait_s)
                 continue
-            # each provider handles its own schema capability (gemini parses a JSON
-            # block; codex/claude use a native schema) — just pass it through.
-            use_schema = schema
-            async with self.sems[name]:
-                dispatch_model = target_model or (model if len(targets) == 1 else None)
-                model_note = f" model={dispatch_model}" if dispatch_model else ""
-                log(f"DISPATCH {label} → {name}{model_note} (cap {self.caps.get(name)})")
-                self._emit(label, "dispatch", provider=name, model=dispatch_model)
-                
-                heartbeat_task = None
-                if heartbeat_interval_s:
-                    async def heartbeat_loop():
-                        nonlocal last_heartbeat
-                        while True:
-                            await asyncio.sleep(heartbeat_interval_s)
-                            last_heartbeat = time.time()
-                            log(f"HEARTBEAT {label} ← {name}")
-                            self._emit(label, "heartbeat", provider=name)
-                    heartbeat_task = asyncio.create_task(heartbeat_loop())
+            break
 
-                try:
-                    def provider_event(event: str, fields: dict[str, Any]) -> None:
-                        if event == "output":
-                            text = str(fields.get("text", ""))
-                            if text:
-                                self._emit(
-                                    label,
-                                    "output",
-                                    provider=name,
-                                    stream=fields.get("stream", "stdout"),
-                                    text=text,
-                                )
-                        elif event == "spawn":
-                            pgid = fields.get("pgid")
-                            if pgid:
-                                self.register_pgid(pgid)
-                        elif event == "reap":
-                            pgid = fields.get("pgid")
-                            if pgid:
-                                self.unregister_pgid(pgid)
-
-                    kwargs = {
-                        "schema": use_schema,
-                        "sandbox": sandbox,
-                        "cwd": effective_cwd,
-                        "toolset": toolset,
-                        "model": dispatch_model,
-                    }
-                    if _accepts_on_event(prov.run):
-                        kwargs["on_event"] = provider_event
-                    coro = prov.run(prompt, **kwargs)
-                    if timeout_s:
-                        value = await asyncio.wait_for(coro, timeout=timeout_s)
-                    else:
-                        value = await coro
-                    
-                    if heartbeat_task:
-                        heartbeat_task.cancel()
-
-                    # read usage immediately (no await between → race-free in asyncio)
-                    usage = getattr(prov, "last_usage", None) or {}
-                    schema_ok = None
-                    if schema is not None:
-                        schema_ok, mismatch = validate(value, schema)
-                        if not schema_ok:
-                            attempts.append(Attempt(name, "SCHEMA_MISMATCH", mismatch[:120]))
-                            log(f"SCHEMA  {label} ✗ {name}: {mismatch[:80]} → failover")
-                            self._emit(label, "schema_mismatch", provider=name, why=mismatch)
-                            continue
-                    attempts.append(Attempt(name, "DONE"))
-                    res = AgentResult(label, "DONE", name, value, attempts, 
-                                      prompt_sha=prompt_hash, last_heartbeat=last_heartbeat,
-                                      schema_ok=schema_ok)
-                    self._done[label] = res      # within-process dedup, not just cross-process
-                    self._record(res, prompt=prompt, schema=schema, attempts=attempts,
-                                 t_start=t_start, kind=why, tools=tool_names, usage=usage,
-                                 model=dispatch_model or usage.get("model"))
-                    self._emit(label, "done", provider=name,
-                               model=dispatch_model or usage.get("model"),
-                               ms=round((time.time() - t_start) * 1000),
-                               input_tokens=usage.get("input_tokens"),
-                               output_tokens=usage.get("output_tokens"),
-                               cost_usd=usage.get("cost_usd"))
-                    log(f"DONE     {label} ← {name}")
-                    return res
-                except asyncio.TimeoutError:
-                    if heartbeat_task:
-                        heartbeat_task.cancel()
-                    attempts.append(Attempt(name, "TIMEOUT", f"Exceeded {timeout_s}s"))
-                    log(f"TIMEOUT  {label} ✗ {name} ({timeout_s}s) → failover")
-                    self._emit(label, "timeout", provider=name, timeout_s=timeout_s)
-                    continue
-                except RateLimited as e:
-                    if heartbeat_task:
-                        heartbeat_task.cancel()
-                    attempts.append(Attempt(name, "RATE_LIMITED", str(e)[:120]))
-                    if self.cooldown_s:
-                        self.ledger.record_cooldown(name, time.time() + self.cooldown_s)
-                    log(f"LIMITED  {label} ✗ {name} → failover")
-                    self._emit(label, "limited", provider=name)
-                    continue
-                except ProviderError as e:
-                    if heartbeat_task:
-                        heartbeat_task.cancel()
-                    detail = str(e)
-                    if schema is not None and detail.startswith("schema mismatch:"):
-                        why_detail = detail.split("schema mismatch:", 1)[1].strip() or detail
-                        attempts.append(Attempt(name, "SCHEMA_MISMATCH", why_detail[:120]))
-                        log(f"SCHEMA  {label} ✗ {name}: {why_detail[:80]} → failover")
-                        self._emit(label, "schema_mismatch", provider=name, why=why_detail)
-                        continue
-                    attempts.append(Attempt(name, "ERROR", detail[:120]))
-                    log(f"ERROR    {label} ✗ {name}: {str(e)[:80]} → failover")
-                    self._emit(label, "error", provider=name, detail=detail[:120])
-                    continue
-                finally:
-                    if heartbeat_task and not heartbeat_task.done():
-                        heartbeat_task.cancel()
-
-        res = AgentResult(label, "EXHAUSTED", None, None, attempts, 
-                          timeout=(attempts[-1].outcome == "TIMEOUT" if attempts else False),
+        res = AgentResult(label, "EXHAUSTED", None, None, attempts,
+                          timeout=(_final_outcome(attempts) == "TIMEOUT"),
                           last_heartbeat=last_heartbeat,
                           schema_ok=(False if schema is not None else None))
         self._record(res, prompt=prompt, schema=schema, attempts=attempts,

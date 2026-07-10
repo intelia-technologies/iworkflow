@@ -33,7 +33,15 @@ class RateLimited(Exception):
 
 
 class ProviderError(Exception):
-    """The CLI failed for a non-rate-limit reason (or timed out)."""
+    """The CLI failed for a non-rate-limit reason (or timed out).
+
+    `transient=False` marks failures a same-provider retry cannot fix (auth
+    required, plan-approval chrome) — the scheduler fails over immediately
+    instead of burning a retry on them."""
+
+    def __init__(self, message: str, *, transient: bool = True):
+        super().__init__(message)
+        self.transient = transient
 
 
 # Patterns that mean "this subscription is throttled" — re-dispatch elsewhere.
@@ -416,7 +424,14 @@ class ClaudeProvider(Provider):
                 if not ok:
                     raise ProviderError(f"schema mismatch: {why}")
                 return payload
-            return result if isinstance(result, str) else json.dumps(result)
+            text = result if isinstance(result, str) else json.dumps(result)
+            # plan permission-mode can surface the approval prompt as the
+            # "result" — that's chrome, not an answer; fail over instead.
+            if _PLAN_CHROME.search(text):
+                raise ProviderError(
+                    "claude -p returned plan-approval chrome, not an answer",
+                    transient=False)
+            return text
         finally:
             for f in (schema_file, mcp_file):
                 if f and os.path.exists(f):
@@ -425,7 +440,16 @@ class ClaudeProvider(Provider):
 
 class GeminiProvider(Provider):
     """agy has no schema flag → schema-less. Natural fit for the adversarial
-    auditor and 1M-context sweeps. If a schema is requested, parse a JSON block."""
+    auditor and 1M-context sweeps. If a schema is requested, parse a JSON block.
+
+    `--new-project` is load-bearing: without it agy attaches to the ambient
+    Antigravity project/conversation state, which in headless runs hangs
+    ("timeout waiting for response") or answers with model-picker chrome
+    instead of the prompt (verified live 2026-07-10).
+    `--dangerously-skip-permissions` keeps a tool-approval prompt from ever
+    blocking a non-interactive run. `--print-timeout` (agy's internal wait,
+    default 5m) is pinned just under our own timeout so agy exits with a
+    classifiable error before we SIGKILL the process group."""
 
     supports_schema: bool = False
 
@@ -440,7 +464,9 @@ class GeminiProvider(Provider):
         model: str | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
-        argv = ["agy", "-p"]
+        print_timeout = max(int(self.timeout_s) - 5, 10)
+        argv = ["agy", "--new-project", "--dangerously-skip-permissions",
+                "--print-timeout", f"{print_timeout}s", "-p"]
         effective_model = model if model is not None else self.model
         if effective_model:
             argv += ["--model", effective_model]
@@ -554,6 +580,7 @@ class CursorProvider(Provider):
         if _cursor_auth_required(combined):
             raise ProviderError(
                 "cursor-agent not logged in — run: cursor-agent login",
+                transient=False,
             )
         self._classify(code, combined)
 
@@ -831,7 +858,8 @@ def _response_text(pane: str) -> str:
     extracted = _extract_sentinel(pane)
     if extracted is not None:
         if _PLAN_CHROME.search(extracted):
-            raise ProviderError("interactive response is plan-approval chrome, not an answer")
+            raise ProviderError("interactive response is plan-approval chrome, not an answer",
+                                transient=False)
         return extracted
 
     if "⏺" in pane:
@@ -846,5 +874,6 @@ def _response_text(pane: str) -> str:
         lines.append(s)
     result = "\n".join(lines).strip()
     if not result or _PLAN_CHROME.search(result):
-        raise ProviderError("interactive response is plan-approval chrome, not an answer")
+        raise ProviderError("interactive response is plan-approval chrome, not an answer",
+                            transient=False)
     return result

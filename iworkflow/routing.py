@@ -40,13 +40,13 @@ CAPABILITIES = {
         "scarcity": "low",
     },
     "claude": {
-        "model": "Claude Opus/Sonnet (interactive TUI via tmux, Pool 1)",
+        "model": "Claude Opus/Sonnet (claude -p headless, subscription)",
         "great_at": ["deep reasoning", "delicate refactors", "architecture & judgment",
                      "nuanced writing", "careful final integration"],
         "weak_at": ["being abundant — shared weekly subscription limit"],
-        "structured_output": "pane extraction (interactive)",
+        "structured_output": "native (--json-schema)",
         "context": "1M",
-        "billing": "subscription Pool 1 — SHARED WEEKLY LIMIT, scarce",
+        "billing": "subscription — SHARED WEEKLY LIMIT, scarce",
         "scarcity": "high — reserve for delicate / high-value work",
     },
     "cursor": {

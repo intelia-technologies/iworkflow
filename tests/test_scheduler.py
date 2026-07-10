@@ -2,7 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from iworkflow import ClaudeInteractiveProvider, FakeProvider, Provider, Runner
+from iworkflow import ClaudeInteractiveProvider, FakeProvider, Provider, ProviderError, Runner
 
 
 class CwdRecordingProvider(Provider):
@@ -490,3 +490,220 @@ def test_emit_reopens_closed_events_file(tmp_path):
     events = [json.loads(line)["event"] for line in path.read_text().splitlines() if line.strip()]
     assert "first" in events
     assert "second" in events
+
+
+class FlakyProvider(Provider):
+    """Raises ProviderError for the first `fail_first_n` calls, then succeeds."""
+
+    def __init__(self, name, fail_first_n=1):
+        super().__init__(name)
+        self.calls = 0
+        self.fail_first_n = fail_first_n
+
+    async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None, model=None):
+        self.calls += 1
+        if self.calls <= self.fail_first_n:
+            raise ProviderError("transient boom")
+        return {"verdict": "DONE", "summary": "ok"}
+
+
+def test_retry_recovers_transient_error(tmp_path):
+    provider = FlakyProvider("codex", fail_first_n=1)
+    runner = Runner(
+        "retry-recovers",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+        retries=1,
+        retry_backoff_s=0.01,
+    )
+
+    result = asyncio.run(runner.agent("work", label="job", prefer=["codex"]))
+
+    assert result.status == "DONE"
+    assert provider.calls == 2
+    assert [a.outcome for a in result.attempts] == ["ERROR", "DONE"]
+    assert [a.provider for a in result.attempts] == ["codex", "codex"]
+
+
+class NonTransientProvider(Provider):
+    """Always fails with a non-transient ProviderError (e.g. plan chrome)."""
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.calls = 0
+
+    async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None, model=None):
+        self.calls += 1
+        raise ProviderError("returned plan-approval chrome", transient=False)
+
+
+def test_non_transient_error_skips_retry(tmp_path):
+    """A ProviderError(transient=False) must fail over without burning a retry."""
+    claude = NonTransientProvider("claude")
+    codex = StaticProvider("codex", {"verdict": "DONE", "summary": "ok"})
+    runner = Runner(
+        "non-transient",
+        {"claude": claude, "codex": codex},
+        {"claude": 1, "codex": 1},
+        journal_dir=str(tmp_path),
+        retries=2,
+        retry_backoff_s=0.01,
+    )
+
+    result = asyncio.run(runner.agent("work", label="job", prefer=["claude", "codex"]))
+
+    assert result.status == "DONE"
+    assert result.provider == "codex"
+    assert claude.calls == 1
+
+
+def test_no_retry_when_retries_zero(tmp_path):
+    provider = FlakyProvider("codex", fail_first_n=1)
+    runner = Runner(
+        "retry-zero",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+        retries=0,
+        retry_backoff_s=0.01,
+    )
+
+    result = asyncio.run(runner.agent("work", label="job", prefer=["codex"]))
+
+    assert result.status == "EXHAUSTED"
+    assert provider.calls == 1
+
+
+def test_rate_limit_fails_over_without_retry(tmp_path):
+    codex = FakeProvider("codex", limit_first_n=99)
+    gemini = FakeProvider("gemini")
+    runner = Runner(
+        "rate-limit-no-retry",
+        {"codex": codex, "gemini": gemini},
+        {"codex": 1, "gemini": 1},
+        journal_dir=str(tmp_path),
+        retries=2,
+        retry_backoff_s=0.01,
+    )
+
+    result = asyncio.run(runner.agent("work", label="job", prefer=["codex", "gemini"]))
+
+    assert result.status == "DONE"
+    assert result.provider == "gemini"
+    assert codex._calls == 1
+    assert [a.outcome for a in result.attempts] == ["RATE_LIMITED", "DONE"]
+
+
+def test_cooldown_wait_instead_of_exhausted(tmp_path):
+    provider = FakeProvider("codex", limit_first_n=1)
+    runner = Runner(
+        "cooldown-wait",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+        cooldown_s=0.3,
+        retries=0,
+        retry_backoff_s=0.01,
+    )
+
+    first = asyncio.run(runner.agent("work a", label="a", prefer=["codex"]))
+
+    async def run_second():
+        start = asyncio.get_running_loop().time()
+        result = await runner.agent("work b", label="b", prefer=["codex"])
+        elapsed = asyncio.get_running_loop().time() - start
+        return result, elapsed
+
+    second, elapsed = asyncio.run(run_second())
+
+    assert first.status == "EXHAUSTED"
+    assert second.status == "DONE"
+    assert elapsed >= 0.2
+    assert second.attempts[0].outcome == "COOLING"
+    assert second.attempts[-1].outcome == "DONE"
+
+
+def test_prefer_single_provider_gains_fallback(tmp_path):
+    codex = FlakyProvider("codex", fail_first_n=99)
+    gemini = StaticProvider("gemini", {"verdict": "DONE", "summary": "g"})
+    runner = Runner(
+        "prefer-fallback",
+        {"codex": codex, "gemini": gemini},
+        {"codex": 1, "gemini": 1},
+        journal_dir=str(tmp_path),
+        retries=0,
+        retry_backoff_s=0.01,
+    )
+
+    result = asyncio.run(runner.agent("work", label="job", prefer=["codex"]))
+
+    assert result.status == "DONE"
+    assert result.provider == "gemini"
+
+
+def test_prefer_fallback_opt_out(tmp_path):
+    codex = FlakyProvider("codex", fail_first_n=99)
+    gemini = StaticProvider("gemini", {"verdict": "DONE", "summary": "g"})
+    runner = Runner(
+        "prefer-no-fallback",
+        {"codex": codex, "gemini": gemini},
+        {"codex": 1, "gemini": 1},
+        journal_dir=str(tmp_path),
+        retries=0,
+        retry_backoff_s=0.01,
+    )
+
+    result = asyncio.run(
+        runner.agent("work", label="job", prefer=["codex"], fallback=False)
+    )
+
+    assert result.status == "EXHAUSTED"
+    assert all(a.provider == "codex" for a in result.attempts)
+
+
+def test_spill_does_not_reroute_pinned_fanout(tmp_path):
+    """A busy pinned provider queues its fan-out; spill must not spray items
+    across the explicit+fallback targets that exist only for failure recovery."""
+    codex = FakeProvider("codex", delay_s=0.05)
+    gemini = FakeProvider("gemini")
+    runner = Runner(
+        "spill-vs-pin",
+        {"codex": codex, "gemini": gemini},
+        {"codex": 1, "gemini": 1},
+        journal_dir=str(tmp_path),
+        spill=True,
+        retries=0,
+    )
+
+    async def run_batch():
+        return await runner.parallel(
+            [
+                lambda i=i: runner.agent(f"work {i}", label=f"pin-{i}", prefer=["codex"])
+                for i in range(4)
+            ]
+        )
+
+    results = asyncio.run(run_batch())
+
+    assert all(r.ok for r in results)
+    assert all(r.provider == "codex" for r in results)
+    assert gemini._calls == 0
+
+
+def test_prefer_fallback_never_promotes_scarce(tmp_path):
+    codex = FlakyProvider("codex", fail_first_n=99)
+    claude = StaticProvider("claude", {"verdict": "DONE", "summary": "c"})
+    runner = Runner(
+        "prefer-no-scarce-fallback",
+        {"codex": codex, "claude": claude},
+        {"codex": 1, "claude": 1},
+        journal_dir=str(tmp_path),
+        retries=0,
+        retry_backoff_s=0.01,
+    )
+
+    result = asyncio.run(runner.agent("work", label="job", prefer=["codex"]))
+
+    assert result.status == "EXHAUSTED"
+    assert all(a.provider == "codex" for a in result.attempts)

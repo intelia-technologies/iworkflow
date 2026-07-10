@@ -389,6 +389,7 @@ class AgentSpec:
     timeout_s: int | None = None
     heartbeat_interval_s: int | None = None
     required: bool = True
+    fallback: bool = True
 
 
 @dataclass
@@ -493,6 +494,7 @@ def _parse_agent(d: dict[str, Any], fallback_id: str, limits: Limits) -> AgentSp
         timeout_s=d.get("timeout_s"),
         heartbeat_interval_s=d.get("heartbeat_interval_s"),
         required=bool(d.get("required", True)),
+        fallback=bool(d.get("fallback", True)),
     )
 
 
@@ -971,6 +973,7 @@ class _Executor:
             "tools": a.tools,
             "timeout_s": a.timeout_s,
             "heartbeat_interval_s": a.heartbeat_interval_s,
+            "fallback": a.fallback,
         }
         if cwd is not None:
             kwargs["cwd"] = str(cwd)
@@ -1749,7 +1752,8 @@ class _Executor:
                           models=p.get("models"), role=p.get("role"),
                           timeout_s=p.get("timeout_s"),
                           heartbeat_interval_s=p.get("heartbeat_interval_s"),
-                          required=bool(p.get("required", True))),
+                          required=bool(p.get("required", True)),
+                          fallback=bool(p.get("fallback", True))),
                 loop_ctx, f"{label}#decide{iteration}")
             verdict = res.value.get(field_name) if isinstance(res.value, dict) else None
             return res.value, (res.ok and verdict in stop_set)
@@ -1767,7 +1771,8 @@ class _Executor:
                           prefer=p.get("prefer"), model=p.get("model"),
                           models=p.get("models"), timeout_s=p.get("timeout_s"),
                           heartbeat_interval_s=p.get("heartbeat_interval_s"),
-                          required=bool(p.get("required", True))),
+                          required=bool(p.get("required", True)),
+                          fallback=bool(p.get("fallback", True))),
                 loop_ctx, f"{label}#vote{iteration}.{i}")
 
         results = await self.runner.parallel([voter(i) for i in range(count)])

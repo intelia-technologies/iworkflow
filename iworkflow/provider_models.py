@@ -35,8 +35,8 @@ PROVIDER_MODELS: dict[str, dict[str, Any]] = {
         },
     },
     "claude": {
-        "label": "Claude (interactive TUI via tmux, Pool 1 subscription)",
-        "cli": "claude --model <model>",
+        "label": "Claude (claude -p headless, subscription)",
+        "cli": "claude -p --model <model>",
         "login": "claude auth login",
         "scarcity": "high",
         "cap": 1,

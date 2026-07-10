@@ -552,3 +552,26 @@ def test_default_runner_explicit_timeout_overrides_all(tmp_path):
     from iworkflow.mcp_server import _default_runner
     r = _default_runner("override", timeout_s=99, journal_dir=str(tmp_path), learn=False)
     assert all(p.timeout_s == 99 for p in r.providers.values())
+
+
+def test_claude_provider_factory_defaults_to_headless(monkeypatch):
+    from iworkflow.mcp_server import _claude_provider
+    from iworkflow.providers import ClaudeInteractiveProvider, ClaudeProvider
+
+    monkeypatch.delenv("IWORKFLOW_CLAUDE_MODE", raising=False)
+
+    provider = _claude_provider(600)
+
+    assert isinstance(provider, ClaudeProvider)
+    assert not isinstance(provider, ClaudeInteractiveProvider)
+
+
+def test_claude_provider_factory_uses_interactive_when_requested(monkeypatch):
+    from iworkflow.mcp_server import _claude_provider
+    from iworkflow.providers import ClaudeInteractiveProvider
+
+    monkeypatch.setenv("IWORKFLOW_CLAUDE_MODE", "interactive")
+
+    provider = _claude_provider(600)
+
+    assert isinstance(provider, ClaudeInteractiveProvider)

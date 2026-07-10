@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from collections.abc import Iterator
@@ -29,7 +30,14 @@ from typing import Any
 
 from .catalog_loaders import load_project_catalog
 from .ledger import sha
-from .providers import ClaudeInteractiveProvider, CodexProvider, CursorProvider, GeminiProvider
+from .providers import (
+    ClaudeInteractiveProvider,
+    ClaudeProvider,
+    CodexProvider,
+    CursorProvider,
+    GeminiProvider,
+    Provider,
+)
 from .provider_models import default_cap, default_timeout
 from .recipes import get_recipe, list_recipes
 from .scheduler import Runner
@@ -81,6 +89,17 @@ def _resolve_journal_dir(journal_dir: str, cwd: str | None) -> str:
     return str(Path(cwd) / path)
 
 
+def _claude_provider(timeout: float) -> Provider:
+    """Headless `claude -p` by default — same subscription pool as the TUI
+    (the announced Pool-1/Pool-2 split was paused before taking effect,
+    verified 2026-07-10), with native JSON envelope + schema support.
+    Set IWORKFLOW_CLAUDE_MODE=interactive to opt back into the tmux TUI
+    driver if Anthropic ever re-enacts a separate headless pool."""
+    if os.environ.get("IWORKFLOW_CLAUDE_MODE", "").strip().lower() == "interactive":
+        return ClaudeInteractiveProvider("claude", timeout_s=timeout)
+    return ClaudeProvider("claude", timeout_s=timeout)
+
+
 def _default_runner(
     run_id: str,
     *,
@@ -107,7 +126,7 @@ def _default_runner(
     providers = {
         "codex": CodexProvider("codex", timeout_s=_timeout("codex")),
         "gemini": GeminiProvider("gemini", timeout_s=_timeout("gemini")),
-        "claude": ClaudeInteractiveProvider("claude", timeout_s=_timeout("claude")),
+        "claude": _claude_provider(_timeout("claude")),
         "cursor": CursorProvider("cursor", timeout_s=_timeout("cursor")),
     }
     return Runner(

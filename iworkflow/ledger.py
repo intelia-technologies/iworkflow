@@ -117,6 +117,10 @@ class RunLedger:
         self._write_json_atomic(self.cooldown_path, cooldowns)
         self._cooldowns = cooldowns
 
+    def cooldown_until(self, provider: str) -> float | None:
+        """Timestamp when the provider's cooldown expires (None = never recorded)."""
+        return self._load_cooldowns().get(provider)
+
     def is_cooling(self, provider: str, now: float) -> bool:
         """Return True when provider is still inside a persisted cooldown."""
         until_ts = self._load_cooldowns().get(provider)

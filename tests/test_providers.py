@@ -562,3 +562,76 @@ def test_acquire_session_recreates_dead_session():
     assert reused2 is False           # dead cache entry → fresh session
     assert s2 != s1
     assert prov._sessions["k"] == s2
+
+
+def test_gemini_provider_passes_new_project_permissions_and_print_timeout(monkeypatch):
+    from iworkflow.providers import GeminiProvider
+
+    provider = GeminiProvider("gemini", timeout_s=120)
+    observed = []
+
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
+        observed.append(argv)
+        return 0, "hello", ""
+
+    monkeypatch.setattr(provider, "_exec_observed", fake_exec)
+
+    result = asyncio.run(provider.run("say hello", schema=None))
+
+    assert result == "hello"
+    assert observed[0][:6] == [
+        "agy",
+        "--new-project",
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        "115s",
+        "-p",
+    ]
+
+
+def test_gemini_provider_print_timeout_has_ten_second_floor(monkeypatch):
+    from iworkflow.providers import GeminiProvider
+
+    provider = GeminiProvider("gemini", timeout_s=10)
+    observed = []
+
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
+        observed.append(argv)
+        return 0, "hello", ""
+
+    monkeypatch.setattr(provider, "_exec_observed", fake_exec)
+
+    asyncio.run(provider.run("say hello", schema=None))
+
+    assert observed[0][4] == "10s"
+
+
+def test_claude_provider_rejects_plan_chrome_from_json_envelope(monkeypatch):
+    from iworkflow.providers import ClaudeProvider
+
+    provider = ClaudeProvider("claude")
+
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
+        return 0, json.dumps({
+            "result": "Here is Claude's plan:\n1. do things\nWould you like to proceed?"
+        }), ""
+
+    monkeypatch.setattr(provider, "_exec_observed", fake_exec)
+
+    with pytest.raises(ProviderError):
+        asyncio.run(provider.run("say hello", schema=None))
+
+
+def test_claude_provider_returns_normal_result_from_json_envelope(monkeypatch):
+    from iworkflow.providers import ClaudeProvider
+
+    provider = ClaudeProvider("claude")
+
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
+        return 0, json.dumps({"result": "the answer"}), ""
+
+    monkeypatch.setattr(provider, "_exec_observed", fake_exec)
+
+    result = asyncio.run(provider.run("say hello", schema=None))
+
+    assert result == "the answer"
