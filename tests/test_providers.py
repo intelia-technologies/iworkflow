@@ -635,3 +635,21 @@ def test_claude_provider_returns_normal_result_from_json_envelope(monkeypatch):
     result = asyncio.run(provider.run("say hello", schema=None))
 
     assert result == "the answer"
+
+
+def test_cursor_provider_locked_keychain_is_non_transient(monkeypatch):
+    from iworkflow.providers import CursorProvider
+
+    provider = CursorProvider("cursor")
+
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
+        return 1, "", ("Error: Your macOS login keychain is locked.\n"
+                       "Run security unlock-keychain and try again.")
+
+    monkeypatch.setattr(provider, "_exec_observed", fake_exec)
+
+    with pytest.raises(ProviderError) as exc:
+        asyncio.run(provider.run("say hello", schema=None))
+
+    assert "keychain" in str(exc.value)
+    assert exc.value.transient is False

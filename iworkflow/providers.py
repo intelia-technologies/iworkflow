@@ -504,6 +504,10 @@ _CURSOR_AUTH_MARKERS = (
     "not logged in",
     "cursor agent",
 )
+# cursor-agent keeps its token in the macOS login keychain; in headless/detached
+# sessions (ssh, tmux/shpool started pre-login, cron) the keychain is locked and
+# every call fails until `security unlock-keychain` — not something a retry fixes.
+_CURSOR_KEYCHAIN_MARKER = "keychain is locked"
 
 
 def _resolve_cursor_model(model: str | None, *, default: str = "composer-2.5") -> str:
@@ -577,6 +581,12 @@ class CursorProvider(Provider):
 
         code, stdout, stderr = await self._exec_observed(argv, "", cwd=cwd, on_event=on_event)
         combined = stdout + "\n" + stderr
+        if _CURSOR_KEYCHAIN_MARKER in combined.lower():
+            raise ProviderError(
+                "cursor-agent blocked: macOS login keychain is locked — "
+                "run: security unlock-keychain",
+                transient=False,
+            )
         if _cursor_auth_required(combined):
             raise ProviderError(
                 "cursor-agent not logged in — run: cursor-agent login",
