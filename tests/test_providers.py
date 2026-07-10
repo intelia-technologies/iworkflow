@@ -637,6 +637,30 @@ def test_claude_provider_returns_normal_result_from_json_envelope(monkeypatch):
     assert result == "the answer"
 
 
+def test_gemini_provider_model_flag_precedes_p(monkeypatch):
+    """-p consumes the next argv element as the prompt — --model must come
+    before it, and the prompt must be the element right after -p."""
+    from iworkflow.providers import GeminiProvider
+
+    provider = GeminiProvider("gemini", timeout_s=120)
+    observed = []
+
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
+        observed.append(argv)
+        return 0, "hello", ""
+
+    monkeypatch.setattr(provider, "_exec_observed", fake_exec)
+
+    asyncio.run(provider.run("say hello", schema=None,
+                             model="Gemini 3.5 Flash (Medium)"))
+
+    argv = observed[0]
+    assert argv[argv.index("--model") + 1] == "Gemini 3.5 Flash (Medium)"
+    assert argv.index("--model") < argv.index("-p")
+    assert argv[argv.index("-p") + 1].startswith("say hello")
+    assert argv[-1] == argv[argv.index("-p") + 1]
+
+
 def test_codex_provider_defaults_to_medium_effort_and_default_tier(monkeypatch):
     from iworkflow.providers import CodexProvider
 

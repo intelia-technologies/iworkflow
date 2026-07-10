@@ -488,7 +488,7 @@ class GeminiProvider(Provider):
     ) -> Any:
         print_timeout = max(int(self.timeout_s) - 5, 10)
         argv = ["agy", "--new-project", "--dangerously-skip-permissions",
-                "--print-timeout", f"{print_timeout}s", "-p"]
+                "--print-timeout", f"{print_timeout}s"]
         effective_model = model if model is not None else self.model
         if effective_model:
             argv += ["--model", effective_model]
@@ -496,7 +496,11 @@ class GeminiProvider(Provider):
         if schema:
             full += ("\n\nReturn ONLY a JSON object matching this schema, "
                      "wrapped in ```json ... ```:\n" + json.dumps(schema))
-        argv += [full]
+        # -p takes its value from the NEXT argv element, so it must come LAST,
+        # immediately followed by the prompt. `-p --model X "prompt"` sends the
+        # literal string "--model" as the prompt (observed live: the model
+        # answered a question about --model instead of the task).
+        argv += ["-p", full]
         code, stdout, stderr = await self._exec_observed(argv, "", cwd=cwd, on_event=on_event)
         self._classify(code, stdout + "\n" + stderr)
         if not schema:
