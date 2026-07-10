@@ -4,7 +4,8 @@ One provider id per vendor (codex, claude, gemini, cursor). Workflows pick a
 model per agent via `model` (single target) or `models` (per-provider map), or
 rely on routing hints in `routing.KIND_MODEL_HINTS`.
 
-Legacy alias `cursor_flash` -> provider `cursor` + model `composer-2.5-flash`.
+Legacy alias `cursor_flash` -> provider `cursor` + model `composer-2.5` (the
+-fast tier is the same model with extra cost, so nothing routes to it).
 """
 
 from __future__ import annotations
@@ -92,20 +93,18 @@ PROVIDER_MODELS: dict[str, dict[str, Any]] = {
         "models": {
             "composer-2.5": {
                 "label": "Composer 2.5",
-                "aliases": ["composer", "2.5"],
-                "notes": "Repo-aware codegen and review",
-            },
-            "composer-2.5-fast": {
-                "label": "Composer 2.5 Fast",
-                "aliases": ["flash", "composer-flash", "2.5-fast", "composer-2.5-flash"],
-                "notes": "Fast fan-out / classify (cursor-agent default)",
+                "aliases": ["composer", "2.5", "flash", "composer-flash",
+                            "2.5-fast", "composer-2.5-fast", "composer-2.5-flash"],
+                "notes": "Repo-aware codegen and review. The -fast tier is the "
+                         "same model with extra-cost priority — deliberately "
+                         "unlisted; all fast/flash aliases resolve here.",
             },
         },
     },
 }
 
 LEGACY_PROVIDER_ALIASES: dict[str, tuple[str, str | None]] = {
-    "cursor_flash": ("cursor", "composer-2.5-fast"),
+    "cursor_flash": ("cursor", "composer-2.5"),  # -fast tier costs extra; never route to it
 }
 
 RoutingTarget = tuple[str, str | None]

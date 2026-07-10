@@ -493,11 +493,14 @@ class GeminiProvider(Provider):
 
 
 CURSOR_MODEL_ALIASES: dict[str, str] = {
+    # The -fast tier is the SAME composer-2.5 model billed with an extra-cost
+    # priority lane — never worth it for background workers, so every fast/flash
+    # spelling deliberately resolves to the base model.
     "composer-2.5": "composer-2.5",
-    "composer-2.5-fast": "composer-2.5-fast",
-    "composer-2.5-flash": "composer-2.5-fast",  # legacy
+    "composer-2.5-fast": "composer-2.5",
+    "composer-2.5-flash": "composer-2.5",  # legacy
     "composer": "composer-2.5",
-    "flash": "composer-2.5-fast",
+    "flash": "composer-2.5",
 }
 _CURSOR_AUTH_MARKERS = (
     "press any key to sign in",

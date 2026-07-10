@@ -433,7 +433,7 @@ def test_resolve_cursor_model_aliases():
     from iworkflow.providers import _resolve_cursor_model
 
     assert _resolve_cursor_model(None) == "composer-2.5"
-    assert _resolve_cursor_model("flash") == "composer-2.5-fast"
+    assert _resolve_cursor_model("flash") == "composer-2.5"
     assert _resolve_cursor_model("custom-model") == "custom-model"
 
 

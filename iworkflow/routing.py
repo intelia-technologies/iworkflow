@@ -50,7 +50,7 @@ CAPABILITIES = {
         "scarcity": "high — reserve for delicate / high-value work",
     },
     "cursor": {
-        "model": "Composer 2.5 / 2.5 Flash (see provider_models)",
+        "model": "Composer 2.5 (fast tier deliberately unused — extra cost)",
         "great_at": ["repo-aware codegen", "fast implementation", "tool use",
                      "review in project context"],
         "weak_at": ["native structured output (none)", "headless without login"],
@@ -93,10 +93,11 @@ KIND_ROUTES = {
 }
 
 # Per kind, optional default model when a provider is auto-routed (vendor id → model id).
+# cursor's -fast tier costs extra for the same model — hints always pin base.
 KIND_MODEL_HINTS: dict[str, dict[str, str]] = {
-    "audit": {"cursor": "composer-2.5-fast"},
-    "classify": {"cursor": "composer-2.5-fast", "gemini": "Gemini 3.5 Flash (Medium)"},
-    "default": {"cursor": "composer-2.5-fast"},
+    "audit": {"cursor": "composer-2.5"},
+    "classify": {"cursor": "composer-2.5", "gemini": "Gemini 3.5 Flash (Medium)"},
+    "default": {"cursor": "composer-2.5"},
     "implement": {"cursor": "composer-2.5"},
     "review": {"cursor": "composer-2.5"},
 }
