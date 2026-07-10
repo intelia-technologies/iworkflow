@@ -526,6 +526,36 @@ def test_retry_recovers_transient_error(tmp_path):
     assert [a.provider for a in result.attempts] == ["codex", "codex"]
 
 
+class EffortRecordingProvider(Provider):
+    """Accepts the optional `effort` kwarg (like CodexProvider) and records it."""
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.seen_effort = "unset"
+
+    async def run(self, prompt, *, schema, sandbox="read-only", cwd=None,
+                  toolset=None, model=None, effort=None):
+        self.seen_effort = effort
+        return {"verdict": "DONE", "summary": "ok"}
+
+
+def test_effort_forwarded_only_to_providers_that_accept_it(tmp_path):
+    codex = EffortRecordingProvider("codex")
+    gemini = FakeProvider("gemini")  # run() has no effort kwarg
+    runner = Runner(
+        "effort-forwarding",
+        {"codex": codex, "gemini": gemini},
+        {"codex": 1, "gemini": 1},
+        journal_dir=str(tmp_path),
+    )
+
+    r1 = asyncio.run(runner.agent("work", label="a", prefer=["codex"], effort="high"))
+    r2 = asyncio.run(runner.agent("work", label="b", prefer=["gemini"], effort="high"))
+
+    assert r1.ok and codex.seen_effort == "high"
+    assert r2.ok  # effort silently dropped for providers without the kwarg
+
+
 class NonTransientProvider(Provider):
     """Always fails with a non-transient ProviderError (e.g. plan chrome)."""
 

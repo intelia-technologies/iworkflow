@@ -116,13 +116,17 @@ def _toml_array(values: Any) -> str:
 
 
 @functools.cache
-def _accepts_on_event(func: Callable[..., Any]) -> bool:
-    """Cache whether a callable accepts an `on_event` kwarg (avoids a per-call
-    inspect.signature() in the streaming exec path)."""
+def _accepts_kwarg(func: Callable[..., Any], name: str) -> bool:
+    """Cache whether a callable accepts a given kwarg (avoids a per-call
+    inspect.signature() in the dispatch path)."""
     try:
-        return "on_event" in inspect.signature(func).parameters
+        return name in inspect.signature(func).parameters
     except (TypeError, ValueError):
         return False
+
+
+def _accepts_on_event(func: Callable[..., Any]) -> bool:
+    return _accepts_kwarg(func, "on_event")
 
 
 @dataclass
@@ -299,7 +303,18 @@ def _parse_codex_usage(stdout: str) -> dict[str, Any] | None:
     return None
 
 
+@dataclass
 class CodexProvider(Provider):
+    """`codex exec` on the ChatGPT subscription.
+
+    Workers default to MEDIUM reasoning effort: the user's ~/.codex/config.toml
+    (e.g. xhigh for interactive use) must not leak into bulk fan-out. Override
+    per agent via the `effort` kwarg (none/minimal/low/medium/high/xhigh/max).
+    The service tier is always pinned to "default" — the fast/priority lane
+    bills ~2x for the same model, never worth it for background workers."""
+
+    effort: str | None = "medium"
+
     async def run(
         self,
         prompt: str,
@@ -309,6 +324,7 @@ class CodexProvider(Provider):
         cwd: str | None = None,
         toolset: ToolSet | None = None,
         model: str | None = None,
+        effort: str | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
         self.last_usage: dict[str, Any] | None = None
@@ -325,6 +341,12 @@ class CodexProvider(Provider):
             effective_model = model if model is not None else self.model
             if effective_model:
                 argv += ["-m", effective_model]
+            effective_effort = effort if effort is not None else self.effort
+            if effective_effort:
+                argv += ["-c", f"model_reasoning_effort={_toml_string(effective_effort)}"]
+            # cost guard: never inherit a fast/priority service tier from the
+            # user's config.toml (~2x cost for the same model).
+            argv += ["-c", 'service_tier="default"']
             mcp_servers = (toolset.mcp_servers()
                            if toolset is not None and not toolset.is_empty() else {})
             if mcp_servers:

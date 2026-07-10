@@ -637,6 +637,44 @@ def test_claude_provider_returns_normal_result_from_json_envelope(monkeypatch):
     assert result == "the answer"
 
 
+def test_codex_provider_defaults_to_medium_effort_and_default_tier(monkeypatch):
+    from iworkflow.providers import CodexProvider
+
+    provider = CodexProvider("codex")
+    observed = []
+
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
+        observed.append(argv)
+        return 0, "", ""
+
+    monkeypatch.setattr(provider, "_exec_observed", fake_exec)
+
+    asyncio.run(provider.run("say hello", schema=None))
+
+    argv = observed[0]
+    assert 'model_reasoning_effort="medium"' in argv
+    assert 'service_tier="default"' in argv
+
+
+def test_codex_provider_per_call_effort_override(monkeypatch):
+    from iworkflow.providers import CodexProvider
+
+    provider = CodexProvider("codex")
+    observed = []
+
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
+        observed.append(argv)
+        return 0, "", ""
+
+    monkeypatch.setattr(provider, "_exec_observed", fake_exec)
+
+    asyncio.run(provider.run("say hello", schema=None, effort="xhigh"))
+
+    argv = observed[0]
+    assert 'model_reasoning_effort="xhigh"' in argv
+    assert 'model_reasoning_effort="medium"' not in argv
+
+
 def test_cursor_provider_locked_keychain_is_non_transient(monkeypatch):
     from iworkflow.providers import CursorProvider
 

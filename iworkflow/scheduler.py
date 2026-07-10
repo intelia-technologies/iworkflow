@@ -25,6 +25,7 @@ from .providers import (
     Provider,
     ProviderError,
     RateLimited,
+    _accepts_kwarg,
     _accepts_on_event,
 )
 from .routing import KIND_ROUTES as ROUTES  # noqa: F401 — re-exported as iworkflow.ROUTES
@@ -221,6 +222,7 @@ class Runner:
                     prefer: list[str | dict[str, Any]] | None = None,
                     model: str | None = None,
                     models: dict[str, str] | None = None,
+                    effort: str | None = None,
                     sandbox: str = "read-only",
                     cwd: str | None = None,
                     tools: list[str] | None = None,
@@ -396,6 +398,10 @@ class Runner:
                                 "toolset": toolset,
                                 "model": dispatch_model,
                             }
+                            # effort only reaches providers that expose it (codex);
+                            # gemini/cursor encode effort in the model id instead.
+                            if effort is not None and _accepts_kwarg(prov.run, "effort"):
+                                kwargs["effort"] = effort
                             if _accepts_on_event(prov.run):
                                 kwargs["on_event"] = provider_event
                             coro = prov.run(prompt, **kwargs)

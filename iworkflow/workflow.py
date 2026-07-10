@@ -381,6 +381,7 @@ class AgentSpec:
     prefer: list[str | dict[str, Any]] | None = None
     model: str | None = None
     models: dict[str, str] | None = None
+    effort: str | None = None
     role: str | None = None
     sandbox: str = "read-only"
     tools: list[str] | None = None
@@ -486,6 +487,7 @@ def _parse_agent(d: dict[str, Any], fallback_id: str, limits: Limits) -> AgentSp
         prefer=d.get("prefer"),
         model=d.get("model"),
         models=d.get("models"),
+        effort=d.get("effort"),
         role=d.get("role"),
         sandbox=sandbox,
         tools=tools,
@@ -968,6 +970,7 @@ class _Executor:
             "prefer": a.prefer,
             "model": a.model,
             "models": a.models,
+            "effort": a.effort,
             "role": a.role,
             "sandbox": a.sandbox,
             "tools": a.tools,
@@ -1749,7 +1752,8 @@ class _Executor:
             res = await self._agent_call(
                 AgentSpec(id="decide", prompt=p["prompt"], schema=schema,
                           prefer=p.get("prefer"), model=p.get("model"),
-                          models=p.get("models"), role=p.get("role"),
+                          models=p.get("models"), effort=p.get("effort"),
+                          role=p.get("role"),
                           timeout_s=p.get("timeout_s"),
                           heartbeat_interval_s=p.get("heartbeat_interval_s"),
                           required=bool(p.get("required", True)),
@@ -1769,7 +1773,8 @@ class _Executor:
             return lambda: self._agent_call(
                 AgentSpec(id=f"vote{i}", prompt=prompt + lens, schema=schema,
                           prefer=p.get("prefer"), model=p.get("model"),
-                          models=p.get("models"), timeout_s=p.get("timeout_s"),
+                          models=p.get("models"), effort=p.get("effort"),
+                          timeout_s=p.get("timeout_s"),
                           heartbeat_interval_s=p.get("heartbeat_interval_s"),
                           required=bool(p.get("required", True)),
                           fallback=bool(p.get("fallback", True))),
