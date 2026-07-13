@@ -98,11 +98,14 @@ domain-agnostic. See `examples/review_client_v4.json` for a host recipe using
 three native checkpoints to model the supervised weekly client review flow.
 
 **Dynamic specs** — *define your own* workflow as **data** (safe to pass across MCP,
-where a Python closure can't go). Run `iworkflow authoring` from the CLI or see
+where a Python closure can't go). Run `iworkflow authoring` from the CLI (or call
+the `iworkflow_authoring` MCP tool) or see
 `docs/USING_IWORKFLOW.md#authoring-helper--how-an-agent-should-design-an-iworkflow`
 for the recipe-authoring checklist: deterministic spine first, provider/model
-routing, timeouts, caps, gates, checkpoints, artifacts, and validation. A spec is a
-list of `steps`, each one of:
+routing, timeouts, caps, gates, checkpoints, artifacts, validation, and **token
+economy** (pass evidence by file path — a recipe that inlines the same corpus
+into N prompts pays N full passes; budget runs with `IWORKFLOW_TOKEN_BUDGET`).
+A spec is a list of `steps`, each one of:
 
 | kind | runs |
 |---|---|

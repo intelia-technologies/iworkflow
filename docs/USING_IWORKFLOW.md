@@ -313,6 +313,42 @@ For every new workflow/recipe:
 5. If it is a host recipe, install it under `.iworkflow/recipes/<name>.json` only
    after the generic example/spec passes in this repo.
 
+### 8) Spend tokens where they buy something (token economy)
+
+iworkflow buys **isolation, traceability, gates, and resume — not token
+savings**. Workers are stateless CLI one-shots: whatever a recipe inlines into
+a prompt is re-ingested on *every* dispatch. A recipe that hands the same
+corpus to N agents costs N full passes — a real 4 MB diagnosis run measured
+**3-6x** the tokens of a monolithic single-model run. Rules that keep the
+overhead bounded:
+
+- **Pass evidence by reference, not by value.** Workers have filesystem
+  access: write the corpus to files once, prompt with paths plus a scope
+  ("read only sections X/Y"). Never template megabytes through `{{...}}`.
+  The runner emits a `corpus_reread` event when the same >100k-char prompt is
+  dispatched twice.
+- **Distill once, fan out on the brief.** One long-context sweep (Gemini's 1M
+  window) reads the corpus and writes per-domain briefs *citing
+  `evidence_refs`*; downstream workers open only their refs. Summarize the
+  **context**, never the **evidence** — IDs, populations, and amounts must
+  stay verifiable at the source or auditors will (rightly) reject the result.
+- **Partition, don't replicate.** Fan-out adjudicators read disjoint slices;
+  together they cost one pass, not N.
+- **One synthesizer, fed summaries.** The reconciler consumes upstream
+  structured returns (`{{steps.x.value...}}`), never the raw corpus again.
+- **Deterministic gates over LLM verifiers.** Coverage, uniqueness, ID
+  resolution, pointer checks, manifest safety: `command` steps are free.
+  Reserve at most one *targeted* auditor scoped to flagged items.
+- **Budget the run.** `IWORKFLOW_TOKEN_BUDGET=2000000` (append `:abort` to
+  hard-stop) or `Runner(token_budget=..., budget_action=...)`. Gemini/cursor
+  report no telemetry, so their usage is estimated (~4 chars/token, flagged
+  `estimated`) — the ledger and the teardown `TOKENS run total` line cover
+  all providers.
+- **Match the tool to the phase.** Read-only diagnosis: one strong model +
+  command validators. Mutations: iworkflow, manifest-driven — load only
+  `evidence_refs`, re-check live state, dry-run, human `checkpoint`, single
+  mutation, independent verification.
+
 ### Copy/paste instruction for an agent
 
 ```text

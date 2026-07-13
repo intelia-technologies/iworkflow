@@ -65,6 +65,12 @@ def ping() -> dict[str, str]:
     return {"ok": "pong from iworkflow", "engine": "subscription-only multi-agent"}
 
 
+def authoring_guide() -> str:
+    """The recipe-design checklist (same text as `iworkflow authoring`)."""
+    from .cli import AUTHORING_GUIDE  # deferred: keep cli/mcp import graphs apart
+    return AUTHORING_GUIDE
+
+
 def _resolve_run_id(run_id: str, goal: str | None, params: dict[str, Any] | None) -> str:
     """Isolate default shared `mcp` runs by goal/params fingerprint."""
     if run_id != "mcp":
@@ -629,6 +635,14 @@ def main() -> None:
     def iworkflow_ping() -> dict[str, str]:
         """Liveness check for the iworkflow engine."""
         return ping()
+
+    @server.tool()
+    def iworkflow_authoring() -> str:
+        """Recipe-design checklist — READ THIS BEFORE authoring a recipe or
+        dynamic spec: deterministic spine, topology, provider routing, sizing,
+        token economy (pass evidence by file path, partition fan-outs, command
+        gates over LLM verifiers, token budgets), gates, and validation."""
+        return authoring_guide()
 
     @server.tool()
     def iworkflow_list_workflows(recipe_dir: str | None = None) -> list[dict[str, Any]]:

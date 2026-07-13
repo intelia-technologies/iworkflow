@@ -171,6 +171,15 @@ def test_cmd_authoring_guide(capsys):
     assert "checkpoint for human/business approval" in out
 
 
+def test_cmd_authoring_guide_covers_token_economy(capsys):
+    main(["authoring"])
+    out = capsys.readouterr().out
+    assert "Token economy" in out
+    assert "Pass evidence by REFERENCE" in out
+    assert "IWORKFLOW_TOKEN_BUDGET" in out
+    assert "Partition, don't replicate" in out
+
+
 def test_main_help_mentions_authoring(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--help"])

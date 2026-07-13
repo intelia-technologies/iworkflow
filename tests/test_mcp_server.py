@@ -575,3 +575,24 @@ def test_claude_provider_factory_uses_interactive_when_requested(monkeypatch):
     provider = _claude_provider(600)
 
     assert isinstance(provider, ClaudeInteractiveProvider)
+
+
+def test_authoring_guide_exposed_over_mcp_with_token_economy():
+    from iworkflow.mcp_server import authoring_guide
+
+    guide = authoring_guide()
+
+    assert "iworkflow authoring guide" in guide
+    assert "Token economy" in guide
+    assert "IWORKFLOW_TOKEN_BUDGET" in guide
+
+
+def test_default_runner_reads_token_budget_env(tmp_path, monkeypatch):
+    from iworkflow.mcp_server import _default_runner
+
+    monkeypatch.setenv("IWORKFLOW_TOKEN_BUDGET", "123456:abort")
+
+    runner = _default_runner("budget-env", journal_dir=str(tmp_path))
+
+    assert runner.token_budget == 123456
+    assert runner.budget_action == "abort"

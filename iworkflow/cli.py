@@ -252,6 +252,26 @@ Sizing
   - Small agent: 180-300s heartbeat 60s. Medium: 600-900s heartbeat 30-60s.
   - Long sweep/synthesis: 1200-2400s heartbeat 30-60s.
 
+Token economy (iworkflow buys isolation/traceability/resume, NOT token savings)
+  - Workers are stateless one-shots: whatever you inline into a prompt is
+    re-ingested on EVERY dispatch. Same corpus to N agents = N full passes
+    (a real 4MB diagnosis run measured 3-6x a monolithic run).
+  - Pass evidence by REFERENCE: write it to files once, prompt with paths +
+    scope. Never template megabytes into {{...}}. The runner emits a
+    corpus_reread warning when a >100k-char prompt repeats.
+  - Distill once, fan out on the brief: one long-context sweep (gemini) writes
+    briefs citing evidence_refs; workers open ONLY their refs. Summarize the
+    CONTEXT, never the evidence — IDs/populations/amounts must stay verifiable.
+  - Partition, don't replicate: fan-out slices must be disjoint (= one pass).
+  - Deterministic gates over LLM verifiers: coverage/uniqueness/ID checks are
+    `command` steps (free). At most ONE targeted auditor, scoped to flagged items.
+  - Budget the run: IWORKFLOW_TOKEN_BUDGET=2000000[:abort] (or
+    Runner(token_budget=...)). gemini/cursor usage is estimated (~4 chars/token)
+    so the teardown "TOKENS run total" line covers all providers.
+  - Read-only diagnosis -> one strong model + command validators. Mutations ->
+    iworkflow (manifest-driven: evidence_refs only, dry-run, checkpoint, single
+    mutation, verify).
+
 Copy/paste instruction
   Create an iworkflow recipe for <goal>. First identify deterministic scripts,
   validators, artifacts, inputs, and irreversible boundaries. Use deterministic
@@ -262,8 +282,11 @@ Copy/paste instruction
   Maximize safe parallelism, but keep writers isolated with write_paths. Inspect
   subscription readiness (iworkflow sessions --json) before choosing caps/fan-out.
   Use internal gates for uncertain agent results, deterministic gates for validators,
-  and checkpoint for human/business approval. Pin run_id/run_dir; declare final
-  artifacts; validate parse + graph + targeted tests before returning.
+  and checkpoint for human/business approval. Pass large evidence by file path +
+  scope (never inline the corpus into prompts); partition fan-out reads so together
+  they equal one pass; prefer command-step validators over extra LLM verifier
+  passes; set IWORKFLOW_TOKEN_BUDGET for expensive runs. Pin run_id/run_dir;
+  declare final artifacts; validate parse + graph + targeted tests before returning.
 
 Full docs: docs/USING_IWORKFLOW.md#authoring-helper--how-an-agent-should-design-an-iworkflow
 """
