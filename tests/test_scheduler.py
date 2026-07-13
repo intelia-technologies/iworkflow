@@ -2,7 +2,11 @@ import asyncio
 import json
 from pathlib import Path
 
-from iworkflow import ClaudeInteractiveProvider, FakeProvider, Provider, ProviderError, Runner
+import pytest
+
+from iworkflow import (
+    BudgetExceeded, ClaudeInteractiveProvider, FakeProvider, Provider, ProviderError, Runner,
+)
 
 
 class CwdRecordingProvider(Provider):
@@ -524,6 +528,93 @@ def test_retry_recovers_transient_error(tmp_path):
     assert provider.calls == 2
     assert [a.outcome for a in result.attempts] == ["ERROR", "DONE"]
     assert [a.provider for a in result.attempts] == ["codex", "codex"]
+
+
+class EstimatedUsageProvider(Provider):
+    """Reports estimated token usage, like the gemini/cursor adapters."""
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.last_usage = {"input_tokens": 100, "output_tokens": 40, "estimated": True}
+
+    async def run(self, prompt, *, schema, sandbox="read-only", cwd=None, toolset=None, model=None):
+        return {"verdict": "DONE", "summary": "ok"}
+
+
+def test_token_rollup_separates_reported_and_estimated(tmp_path):
+    codex = FakeProvider("codex")          # reports input=10 output=5
+    gemini = EstimatedUsageProvider("gemini")
+    runner = Runner(
+        "token-rollup",
+        {"codex": codex, "gemini": gemini},
+        {"codex": 1, "gemini": 1},
+        journal_dir=str(tmp_path),
+    )
+
+    asyncio.run(runner.agent("work", label="a", prefer=["codex"]))
+    asyncio.run(runner.agent("work", label="b", prefer=["gemini"]))
+
+    assert runner.token_totals == {"input": 10, "output": 5,
+                                   "estimated_input": 100, "estimated_output": 40}
+    assert runner.tokens_spent() == 155
+    assert runner.token_summary()["total"] == 155
+
+
+def test_budget_abort_raises_once_exceeded(tmp_path):
+    provider = FakeProvider("codex")       # 15 tokens per call
+    runner = Runner(
+        "budget-abort",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+        token_budget=5,
+        budget_action="abort",
+    )
+
+    first = asyncio.run(runner.agent("work", label="a", prefer=["codex"]))
+    assert first.ok                        # budget checked BEFORE spend: 0 < 5
+
+    with pytest.raises(BudgetExceeded):
+        asyncio.run(runner.agent("work", label="b", prefer=["codex"]))
+
+
+def test_budget_warn_continues_and_emits_once(tmp_path):
+    provider = FakeProvider("codex")
+    runner = Runner(
+        "budget-warn",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+        token_budget=5,
+    )
+
+    for label in ("a", "b", "c"):
+        assert asyncio.run(runner.agent("work", label=label, prefer=["codex"])).ok
+
+    events = [json.loads(line)["event"]
+              for line in (tmp_path / "runs" / "budget-warn" / "events.jsonl")
+              .read_text().splitlines()]
+    assert events.count("budget_exceeded") == 1
+
+
+def test_corpus_reread_warning_on_repeated_large_prompt(tmp_path):
+    provider = FakeProvider("codex")
+    runner = Runner(
+        "corpus-reread",
+        {"codex": provider},
+        {"codex": 1},
+        journal_dir=str(tmp_path),
+    )
+    corpus = "x" * 120_000
+
+    asyncio.run(runner.agent(corpus, label="a", prefer=["codex"]))
+    asyncio.run(runner.agent(corpus, label="b", prefer=["codex"]))
+
+    events = [json.loads(line)
+              for line in (tmp_path / "runs" / "corpus-reread" / "events.jsonl")
+              .read_text().splitlines()]
+    rereads = [e for e in events if e["event"] == "corpus_reread"]
+    assert len(rereads) == 1 and rereads[0]["times"] == 2
 
 
 class EffortRecordingProvider(Provider):

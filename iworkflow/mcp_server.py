@@ -123,6 +123,20 @@ def _default_runner(
     def _timeout(name: str) -> float:
         return timeout_s if timeout_s is not None else (default_timeout(name) or 300)
 
+    # universal budget knob without threading a param through every entrypoint:
+    # IWORKFLOW_TOKEN_BUDGET=2000000 caps the run (warn; ":abort" to hard-stop,
+    # e.g. "2000000:abort").
+    budget_env = os.environ.get("IWORKFLOW_TOKEN_BUDGET", "").strip()
+    token_budget, budget_action = None, "warn"
+    if budget_env:
+        raw, _, action = budget_env.partition(":")
+        try:
+            token_budget = int(raw)
+        except ValueError:
+            token_budget = None
+        if action.strip().lower() == "abort":
+            budget_action = "abort"
+
     providers = {
         "codex": CodexProvider("codex", timeout_s=_timeout("codex")),
         "gemini": GeminiProvider("gemini", timeout_s=_timeout("gemini")),
@@ -140,6 +154,8 @@ def _default_runner(
         default_cwd=cwd,
         checkpoint_resolver=checkpoint_resolver,
         spill=spill,
+        token_budget=token_budget,
+        budget_action=budget_action,
     )
 
 

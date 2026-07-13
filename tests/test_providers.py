@@ -661,6 +661,42 @@ def test_gemini_provider_model_flag_precedes_p(monkeypatch):
     assert argv[-1] == argv[argv.index("-p") + 1]
 
 
+def test_gemini_provider_estimates_token_usage(monkeypatch):
+    from iworkflow.providers import GeminiProvider
+
+    provider = GeminiProvider("gemini", timeout_s=120)
+
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
+        return 0, "a response of some length", ""
+
+    monkeypatch.setattr(provider, "_exec_observed", fake_exec)
+
+    asyncio.run(provider.run("a prompt", schema=None))
+
+    usage = provider.last_usage
+    assert usage["estimated"] is True
+    assert usage["input_tokens"] == len("a prompt") // 4
+    assert usage["output_tokens"] == len("a response of some length") // 4
+
+
+def test_cursor_provider_estimates_token_usage(monkeypatch):
+    from iworkflow.providers import CursorProvider
+
+    provider = CursorProvider("cursor")
+
+    async def fake_exec(argv, stdin, cwd=None, on_event=None):
+        return 0, "cursor answer", ""
+
+    monkeypatch.setattr(provider, "_exec_observed", fake_exec)
+
+    asyncio.run(provider.run("a prompt", schema=None))
+
+    usage = provider.last_usage
+    assert usage["estimated"] is True
+    assert usage["input_tokens"] > 0 and usage["output_tokens"] > 0
+    assert usage["model"] == "composer-2.5"
+
+
 def test_codex_provider_defaults_to_medium_effort_and_default_tier(monkeypatch):
     from iworkflow.providers import CodexProvider
 

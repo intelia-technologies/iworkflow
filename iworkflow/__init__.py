@@ -32,7 +32,7 @@ from .learn import adjust_order
 from .provider_models import list_provider_models, resolve_model
 from .sessions import format_sessions_text, probe_sessions
 from .routing import CAPABILITIES, KIND_ROUTES, infer_kind, route
-from .scheduler import AgentResult, Runner, ROUTES, log
+from .scheduler import AgentResult, BudgetExceeded, Runner, ROUTES, log
 from .stats import provider_stats, run_summary
 from .toolsets import ToolCatalog, ToolKind, ToolSet, ToolSpec
 from .workflow import (
@@ -42,7 +42,7 @@ from .workflow import (
 from .recipes import all_recipes, get_recipe, list_recipes
 
 __all__ = [
-    "Runner", "AgentResult", "ROUTES", "log",
+    "Runner", "AgentResult", "BudgetExceeded", "ROUTES", "log",
     "Provider", "CodexProvider", "ClaudeProvider", "ClaudeInteractiveProvider",
     "CursorProvider", "GeminiProvider", "FakeProvider", "RateLimited", "ProviderError",
     "CAPABILITIES", "KIND_ROUTES", "infer_kind", "route", "provider_stats",

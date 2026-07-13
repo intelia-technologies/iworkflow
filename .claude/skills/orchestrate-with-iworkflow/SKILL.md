@@ -94,6 +94,38 @@ Doers should return structured tri-state verdicts when control flow depends on
 their output. Independent auditors can stay schema-less so they do not collapse
 nuance into a shallow enum.
 
+## Token Economy
+
+iworkflow buys isolation, traceability, gates, and resume — NOT token savings.
+Every worker is a stateless CLI one-shot: whatever you inline into a prompt is
+re-ingested on every dispatch. A recipe that hands the same corpus to N agents
+costs N full passes (a real 4 MB diagnosis run measured 3-6x a monolithic run).
+
+Rules that keep the overhead bounded:
+
+- **Pass evidence by REFERENCE, not by value.** Workers are CLIs with
+  filesystem access — write the corpus to files once and prompt with paths
+  plus a scope ("read only sections X/Y"). Never template megabytes into
+  `{{...}}`. The runner warns (`corpus_reread` event) when the same >100k-char
+  prompt is dispatched twice.
+- **Partition, don't replicate.** Fan-out adjudicators should each read a
+  disjoint slice; together they equal ONE pass, not N.
+- **One synthesizer, fed summaries.** The reconciler reads upstream structured
+  returns, never the raw corpus again.
+- **Deterministic gates over LLM verifiers.** Coverage, uniqueness, ID
+  resolution, JSON-pointer checks, manifest safety — that's `kind: command`
+  steps (free), not another agent pass. Reserve at most ONE targeted auditor,
+  scoped to flagged items and their evidence_refs only.
+- **Budget the run.** `Runner(token_budget=..., budget_action="warn"|"abort")`
+  or `IWORKFLOW_TOKEN_BUDGET=2000000[:abort]` caps total spend; gemini/cursor
+  usage is estimated (~4 chars/token, flagged `estimated`) so the rollup and
+  the `TOKENS run total` teardown line reflect ALL providers, not just
+  codex/claude.
+- **Use iworkflow where mutations are** (manifest-driven repair: load only
+  evidence_refs, re-check state, dry-run, human gate, single mutation,
+  verify) — and a single strong model + command validators for read-only
+  diagnosis.
+
 ## Limits And Safety
 
 For untrusted specs, keep default `Limits` conservative:

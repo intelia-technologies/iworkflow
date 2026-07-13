@@ -38,6 +38,16 @@ def log(msg: str) -> None:
     print(f"[iworkflow] {msg}", file=sys.stderr, flush=True)
 
 
+class BudgetExceeded(RuntimeError):
+    """Raised (budget_action='abort') when a run crosses its token budget."""
+
+
+# Prompts at/above this size get tracked; dispatching the SAME huge prompt more
+# than once is the multi-pass-corpus antipattern (pass file paths instead —
+# workers are CLIs with filesystem access).
+LARGE_PROMPT_CHARS = 100_000
+
+
 @dataclass
 class Attempt:
     provider: str
@@ -92,7 +102,9 @@ class Runner:
                  learn_window: int = LEARN_STATS_WINDOW,
                  spill: bool = False,
                  retries: int = 1,
-                 retry_backoff_s: float = 2.0):
+                 retry_backoff_s: float = 2.0,
+                 token_budget: int | None = None,
+                 budget_action: str = "warn"):
         self.run_id = run_id
         self.providers = providers
         self._tmux_socket = f"iw_{run_id}"
@@ -116,6 +128,16 @@ class Runner:
         # failing over (rate limits and schema mismatches never retry).
         self.retries = max(0, int(retries))
         self.retry_backoff_s = retry_backoff_s
+        # token accounting: provider-reported and estimated (gemini/cursor have
+        # no telemetry; their adapters estimate at ~4 chars/token) tracked apart.
+        # token_budget caps the RUN's total (reported+estimated, in+out):
+        # 'warn' logs once when crossed, 'abort' raises BudgetExceeded.
+        self.token_budget = int(token_budget) if token_budget else None
+        self.budget_action = budget_action
+        self.token_totals = {"input": 0, "output": 0,
+                             "estimated_input": 0, "estimated_output": 0}
+        self._budget_warned = False
+        self._large_prompts: dict[str, int] = {}
         # learn=True: demote providers that have been failing across past ledgers
         self._stats = provider_stats(journal_dir, recent=learn_window) if learn else {}
         self.ledger = RunLedger(run_id, journal_dir)
@@ -169,9 +191,56 @@ class Runner:
                 pass
             self.active_pgids.discard(pgid)
 
+    def _add_usage(self, usage: dict[str, Any]) -> None:
+        est = bool(usage.get("estimated"))
+        for direction, key in (("input_tokens", "input"), ("output_tokens", "output")):
+            n = usage.get(direction)
+            if n:
+                self.token_totals[f"estimated_{key}" if est else key] += int(n)
+
+    def tokens_spent(self) -> int:
+        """Run total across reported + estimated, input + output."""
+        return sum(self.token_totals.values())
+
+    def token_summary(self) -> dict[str, Any]:
+        return {**self.token_totals, "total": self.tokens_spent(),
+                "budget": self.token_budget}
+
+    def _check_budget(self, label: str) -> None:
+        if not self.token_budget:
+            return
+        spent = self.tokens_spent()
+        if spent < self.token_budget:
+            return
+        if self.budget_action == "abort":
+            raise BudgetExceeded(
+                f"run {self.run_id}: {spent} tokens spent >= budget {self.token_budget}")
+        if not self._budget_warned:
+            self._budget_warned = True
+            log(f"BUDGET   ⚠ {spent} tokens spent >= budget {self.token_budget} "
+                f"(budget_action=warn — dispatch continues)")
+            self._emit(label, "budget_exceeded", spent=spent, budget=self.token_budget)
+
+    def _track_large_prompt(self, label: str, prompt: str, prompt_hash: str) -> None:
+        if len(prompt) < LARGE_PROMPT_CHARS:
+            return
+        seen = self._large_prompts.get(prompt_hash, 0) + 1
+        self._large_prompts[prompt_hash] = seen
+        if seen == 2:
+            log(f"TOKENS   ⚠ the same {len(prompt) // 1000}k-char prompt was "
+                f"dispatched again ({label}) — pass evidence by REFERENCE "
+                f"(file paths; workers have filesystem access), not inline")
+            self._emit(label, "corpus_reread", chars=len(prompt), times=seen)
+
     async def teardown(self) -> None:
         await self.teardown_tmux()
         self.kill_active_pgids()
+        summary = self.token_summary()
+        if summary["total"]:
+            log(f"TOKENS   run total ≈{summary['total']:,} "
+                f"(reported in/out {summary['input']:,}/{summary['output']:,}, "
+                f"estimated in/out {summary['estimated_input']:,}/{summary['estimated_output']:,})")
+            self._emit("_run", "token_summary", **summary)
         self._close_events()
 
     async def teardown_tmux(self) -> None:
@@ -244,6 +313,8 @@ class Runner:
                 self._emit(label, "resumed", provider=cached.provider)
                 return replace(cached, resumed=True)   # always flag cache hits
 
+        self._check_budget(label)               # cached hits above stay free
+        self._track_large_prompt(label, prompt, prompt_hash)
         effective_cwd = cwd if cwd is not None else self.default_cwd
         t_start = time.time()
         # tool selection: explicit names/tags win; else auto-pick top-k by keyword
@@ -415,6 +486,7 @@ class Runner:
 
                             # read usage immediately (no await between → race-free in asyncio)
                             usage = getattr(prov, "last_usage", None) or {}
+                            self._add_usage(usage)   # spent even if the schema check fails
                             schema_ok = None
                             if schema is not None:
                                 schema_ok, mismatch = validate(value, schema)

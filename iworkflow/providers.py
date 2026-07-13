@@ -92,6 +92,15 @@ def _extract_sentinel(text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _estimated_usage(prompt: str, output: str) -> dict[str, Any]:
+    """Rough ~4 chars/token estimate for CLIs that report no telemetry
+    (agy, cursor-agent). Flagged `estimated` so rollups can separate it
+    from provider-reported counts — an estimate is far better than the
+    null that made multi-pass corpus recipes look free in the ledger."""
+    return {"input_tokens": len(prompt) // 4, "output_tokens": len(output) // 4,
+            "cost_usd": None, "estimated": True}
+
+
 def _prompt_with_toolset(prompt: str, toolset: ToolSet | None) -> str:
     if toolset is None or toolset.is_empty():
         return prompt
@@ -503,6 +512,9 @@ class GeminiProvider(Provider):
         argv += ["-p", full]
         code, stdout, stderr = await self._exec_observed(argv, "", cwd=cwd, on_event=on_event)
         self._classify(code, stdout + "\n" + stderr)
+        # agy reports no token telemetry — estimate at ~4 chars/token so the
+        # ledger and run rollup stop silently under-reporting gemini work.
+        self.last_usage = _estimated_usage(full, stdout)
         if not schema:
             return stdout.strip()
         m = re.search(r"```json\s*(.*?)\s*```", stdout, re.DOTALL)
@@ -626,13 +638,8 @@ class CursorProvider(Provider):
         answer = stdout.strip()
         if not answer:
             raise ProviderError("cursor-agent returned empty output")
-        self.last_usage = {
-            "input_tokens": None,
-            "output_tokens": None,
-            "cost_usd": None,
-            "duration_ms": None,
-            "model": resolved,
-        }
+        # cursor-agent reports no token telemetry — estimate (see _estimated_usage)
+        self.last_usage = {**_estimated_usage(full, answer), "model": resolved}
 
         if schema:
             m = re.search(r"```json\s*(.*?)\s*```", answer, re.DOTALL)
